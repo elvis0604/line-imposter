@@ -12,13 +12,16 @@ export interface Room {
   hostId: string;
   players: Player[];
   status: GameStatus;
+  // Game config (set by host before starting, preserved across rematches):
+  totalRounds: number;
+  turnDuration: number;     // ms per drawing turn
+  category: string | null;  // null = random from all categories
   // Phase 3+ (present from creation but unused until Phase 3):
   word: string | null;
   imposterId: string | null;
   turnOrder: string[];
   currentTurnIndex: number;
   currentRound: number;
-  totalRounds: number;
   votes: Record<string, string>; // voterId → accusedId
   createdAt: number; // unix ms
 }
@@ -84,6 +87,7 @@ export type ServerMessage =
       timeLeft: number;     // ms remaining (< turnDuration on reconnect)
     }
   | { type: 'game_over' }
+  | { type: 'game_reset' }
   | { type: 'vote_cast'; votedCount: number; totalPlayers: number }
   | { type: 'voting_complete'; results: VotingResults };
 

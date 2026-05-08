@@ -26,13 +26,18 @@ const WORDS: Record<string, string[]> = {
   ],
 };
 
-/** Pick a random word from the full word bank. */
-export function pickRandomWord(): { word: string; category: string } {
-  const categories = Object.keys(WORDS);
-  const category = categories[Math.floor(Math.random() * categories.length)];
-  const list = WORDS[category];
+/** All available category names. */
+export const CATEGORIES = Object.keys(WORDS) as string[];
+
+/** Pick a random word, optionally restricted to a specific category. */
+export function pickRandomWord(category?: string | null): { word: string; category: string } {
+  const cat =
+    category && WORDS[category]
+      ? category
+      : CATEGORIES[Math.floor(Math.random() * CATEGORIES.length)];
+  const list = WORDS[cat];
   const word = list[Math.floor(Math.random() * list.length)];
-  return { word, category };
+  return { word, category: cat };
 }
 
 export default WORDS;

@@ -20,6 +20,7 @@ export default async function GamePage(props: PageProps<'/room/[code]/game'>) {
   }
 
   const isImposter = room.imposterId === playerId;
+  const isHost = room.hostId === playerId;
   const word = isImposter ? null : room.word;
 
   return (
@@ -28,6 +29,7 @@ export default async function GamePage(props: PageProps<'/room/[code]/game'>) {
         room={room}
         word={word}
         isImposter={isImposter}
+        isHost={isHost}
         playerId={playerId}
       />
     </Center>

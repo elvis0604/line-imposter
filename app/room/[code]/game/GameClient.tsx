@@ -35,10 +35,6 @@ import type {
 import DrawingCanvas, { type DrawingCanvasHandle } from './DrawingCanvas';
 import Toolbar from './Toolbar';
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-const TURN_DURATION_MS = 5_000;
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function avatarLetters(name: string) {
@@ -70,10 +66,11 @@ interface Props {
   room: Room;
   word: string | null;
   isImposter: boolean;
+  isHost: boolean;
   playerId: string;
 }
 
-export default function GameClient({ room, word, isImposter, playerId }: Props) {
+export default function GameClient({ room, word, isImposter, isHost, playerId }: Props) {
   const router = useRouter();
 
   // ── Phase & turn state ────────────────────────────────────────────────────
@@ -83,9 +80,9 @@ export default function GameClient({ room, word, isImposter, playerId }: Props) 
     turnIndex: 0,
     round: room.currentRound,
     totalRounds: room.totalRounds,
-    turnDuration: TURN_DURATION_MS,
+    turnDuration: room.turnDuration ?? 60_000,
   });
-  const [timeLeftMs, setTimeLeftMs] = useState(TURN_DURATION_MS);
+  const [timeLeftMs, setTimeLeftMs] = useState(0);
   const turnEndTimeRef = useRef(0);
   const rafRef = useRef<number>(0);
 
@@ -99,6 +96,9 @@ export default function GameClient({ room, word, isImposter, playerId }: Props) 
   const [votedCount, setVotedCount] = useState(0);
   const [votingLoading, setVotingLoading] = useState(false);
   const [votingResults, setVotingResults] = useState<VotingResults | null>(null);
+
+  // ── Play-again state ──────────────────────────────────────────────────────
+  const [playAgainLoading, setPlayAgainLoading] = useState(false);
 
   // ── Canvas & socket refs ──────────────────────────────────────────────────
   const canvasRef = useRef<DrawingCanvasHandle>(null);
@@ -177,6 +177,12 @@ export default function GameClient({ room, word, isImposter, playerId }: Props) 
         case 'voting_complete': {
           setVotingResults(msg.results);
           setGamePhase('results');
+          break;
+        }
+
+        case 'game_reset': {
+          // Host reset — return everyone to the lobby.
+          router.push(`/room/${room.code}`);
           break;
         }
 
@@ -264,6 +270,23 @@ export default function GameClient({ room, word, isImposter, playerId }: Props) 
     },
     [room.code],
   );
+
+  // ── Play-again handler (host only) ────────────────────────────────────────
+  const handlePlayAgain = useCallback(async () => {
+    setPlayAgainLoading(true);
+    try {
+      const res = await fetch(`/api/rooms/${room.code}/reset`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Failed to reset' })) as { error: string };
+        notifications.show({ color: 'red', title: 'Error', message: err.error });
+        setPlayAgainLoading(false);
+      }
+      // On success, PartyKit broadcasts game_reset → all clients redirect to lobby
+    } catch {
+      notifications.show({ color: 'red', title: 'Error', message: 'Could not reach server' });
+      setPlayAgainLoading(false);
+    }
+  }, [room.code]);
 
   // ── Derived ───────────────────────────────────────────────────────────────
   const isMyTurn = turnState.drawerId === playerId;
@@ -516,8 +539,23 @@ export default function GameClient({ room, word, isImposter, playerId }: Props) 
         </Stack>
 
         <Button size="md" onClick={() => router.push('/')}>
-          Play again
+          Leave
         </Button>
+
+        {isHost ? (
+          <Button
+            size="md"
+            color="violet"
+            loading={playAgainLoading}
+            onClick={handlePlayAgain}
+          >
+            Play again
+          </Button>
+        ) : (
+          <Text size="sm" c="dimmed" ta="center">
+            Waiting for host to start a new game…
+          </Text>
+        )}
       </Stack>
     );
   }
@@ -526,7 +564,7 @@ export default function GameClient({ room, word, isImposter, playerId }: Props) 
   // PLAYING PHASE  (also rendered during 'prep' so the canvas stays mounted)
   // ─────────────────────────────────────────────────────────────────────────
   return (
-    <Stack gap="sm" w="100%" maw={700}>
+    <Stack gap="sm" w="100%" maw={900}>
       {/* ── Prep-phase modal — shown between turns while waiting for drawer ── */}
       <Modal
         opened={gamePhase === 'prep'}
@@ -614,25 +652,56 @@ export default function GameClient({ room, word, isImposter, playerId }: Props) 
 
       <Divider />
 
-      {/* ── Canvas ──────────────────────────────────────────────────────── */}
-      <Box
-        style={{
-          width: '100%',
-          border: '2px solid var(--mantine-color-gray-3)',
-          borderRadius: 8,
-          overflow: 'hidden',
-          background: '#fff',
-        }}
-      >
-        <DrawingCanvas
-          ref={canvasRef}
-          isDrawingAllowed={isMyTurn}
-          color={color}
-          lineWidth={lineWidth}
-          tool={tool}
-          onDraw={handleDraw}
-        />
-      </Box>
+      {/* ── Canvas + turn order side by side ────────────────────────────── */}
+      <Group align="flex-start" wrap="nowrap" gap="sm">
+        {/* Canvas */}
+        <Box
+          style={{
+            flex: 1,
+            border: '2px solid var(--mantine-color-gray-3)',
+            borderRadius: 8,
+            overflow: 'hidden',
+            background: '#fff',
+          }}
+        >
+          <DrawingCanvas
+            ref={canvasRef}
+            isDrawingAllowed={isMyTurn}
+            color={color}
+            lineWidth={lineWidth}
+            tool={tool}
+            onDraw={handleDraw}
+          />
+        </Box>
+
+        {/* Turn order */}
+        <Paper withBorder p="sm" radius="md" w={140} style={{ flexShrink: 0 }}>
+          <Stack gap={6}>
+            <Text size="xs" tt="uppercase" fw={700} c="dimmed">Turn order</Text>
+            {room.turnOrder.map((pid, idx) => {
+              const p = room.players.find((pl) => pl.id === pid);
+              if (!p) return null;
+              const isCurrent = idx === turnState.turnIndex;
+              return (
+                <Group key={pid} gap={4} wrap="nowrap">
+                  <Text size="xs" c="dimmed" w={14} style={{ flexShrink: 0 }}>{idx + 1}.</Text>
+                  <Text
+                    size="xs"
+                    fw={isCurrent ? 700 : 400}
+                    c={isCurrent ? 'violet' : undefined}
+                    style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  >
+                    {p.name}{pid === playerId && ' (you)'}
+                  </Text>
+                  {isCurrent && (
+                    <Badge size="xs" color="violet" variant="dot" style={{ flexShrink: 0 }} />
+                  )}
+                </Group>
+              );
+            })}
+          </Stack>
+        </Paper>
+      </Group>
 
       {/* ── Toolbar ─────────────────────────────────────────────────────── */}
       <Paper withBorder p="sm" radius="md">
@@ -654,37 +723,6 @@ export default function GameClient({ room, word, isImposter, playerId }: Props) 
           </Group>
         )}
       </Paper>
-
-      {/* ── Turn order (collapsed) ───────────────────────────────────────── */}
-      <details style={{ marginTop: 4 }}>
-        <summary
-          style={{ cursor: 'pointer', fontSize: 12, color: 'var(--mantine-color-dimmed)' }}
-        >
-          Turn order
-        </summary>
-        <Stack gap={4} mt="xs">
-          {room.turnOrder.map((pid, idx) => {
-            const p = room.players.find((pl) => pl.id === pid);
-            if (!p) return null;
-            const isCurrent = idx === turnState.turnIndex;
-            return (
-              <Group key={pid} gap="xs">
-                <Text size="xs" c="dimmed" w={16}>{idx + 1}.</Text>
-                <Text
-                  size="xs"
-                  fw={isCurrent ? 700 : 400}
-                  c={isCurrent ? 'violet' : undefined}
-                >
-                  {p.name}{pid === playerId && ' (you)'}
-                </Text>
-                {isCurrent && (
-                  <Badge size="xs" color="violet" variant="dot">now</Badge>
-                )}
-              </Group>
-            );
-          })}
-        </Stack>
-      </details>
     </Stack>
   );
 }

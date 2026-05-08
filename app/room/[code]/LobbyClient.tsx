@@ -17,9 +17,11 @@ import {
   Divider,
   Loader,
   Center,
+  NumberInput,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import type { Player, Room, ServerMessage } from '@/lib/types';
+import { DEFAULT_TOTAL_ROUNDS, DEFAULT_TURN_DURATION } from '@/lib/room';
 
 interface Props {
   initialRoom: Room;
@@ -46,10 +48,25 @@ export default function LobbyClient({ initialRoom }: Props) {
 
   const isHost = room.hostId === playerId;
 
+  // ── Config state (host only) ──────────────────────────────────────────────
+  const [totalRounds, setTotalRounds] = useState<number>(
+    initialRoom.totalRounds ?? DEFAULT_TOTAL_ROUNDS,
+  );
+  const [turnDuration, setTurnDuration] = useState<number>(
+    Math.round((initialRoom.turnDuration ?? DEFAULT_TURN_DURATION) / 1000),
+  );
+
   async function handleStart() {
     setStarting(true);
     try {
-      const res = await fetch(`/api/rooms/${room.code}/start`, { method: 'POST' });
+      const res = await fetch(`/api/rooms/${room.code}/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          totalRounds,
+          turnDuration: turnDuration * 1000,
+        }),
+      });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: 'Failed to start' }));
         notifications.show({ color: 'red', title: 'Error', message: err.error });
@@ -185,6 +202,35 @@ export default function LobbyClient({ initialRoom }: Props) {
       </Stack>
 
       <Divider />
+
+      {/* Game config (host only) */}
+      {isHost && (
+        <>
+          <Stack gap="sm">
+            <Text fw={600} size="sm">Game settings</Text>
+
+            <NumberInput
+              label="Rounds"
+              description="Number of rounds per game"
+              min={1}
+              max={10}
+              value={totalRounds}
+              onChange={(v) => setTotalRounds(Number(v) || DEFAULT_TOTAL_ROUNDS)}
+            />
+
+            <NumberInput
+              label="Turn duration (seconds)"
+              description="How long each player has to draw"
+              min={3}
+              max={10}
+              value={turnDuration}
+              onChange={(v) => setTurnDuration(Number(v) || Math.round(DEFAULT_TURN_DURATION / 1000))}
+            />
+          </Stack>
+
+          <Divider />
+        </>
+      )}
 
       {/* Start / waiting */}
       {isHost ? (

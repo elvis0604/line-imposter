@@ -50,9 +50,20 @@ function shuffle<T>(arr: T[]): T[] {
   return arr;
 }
 
+// ─── Defaults ─────────────────────────────────────────────────────────────────
+
+export const DEFAULT_TOTAL_ROUNDS = 3;
+export const DEFAULT_TURN_DURATION = 5_000; // ms
+
+// ─── Start ────────────────────────────────────────────────────────────────────
+
 export interface StartRoomOptions {
   word: string;
   imposterId: string;
+  /** Config values to persist on the room (from host's lobby settings). */
+  totalRounds: number;
+  turnDuration: number;
+  category: string | null;
 }
 
 /** Transition a room from lobby → playing. Mutates and saves the room. */
@@ -63,6 +74,9 @@ export async function startRoom(code: string, opts: StartRoomOptions): Promise<R
   room.status = 'playing';
   room.word = opts.word;
   room.imposterId = opts.imposterId;
+  room.totalRounds = opts.totalRounds;
+  room.turnDuration = opts.turnDuration;
+  room.category = opts.category;
   room.turnOrder = shuffle(room.players.map((p) => p.id));
   room.currentTurnIndex = 0;
   room.currentRound = 1;
@@ -71,20 +85,46 @@ export async function startRoom(code: string, opts: StartRoomOptions): Promise<R
   return room;
 }
 
+// ─── Reset (play again) ───────────────────────────────────────────────────────
+
+/**
+ * Reset a room back to lobby state for a rematch.
+ * Keeps the player list and config (totalRounds, turnDuration, category).
+ */
+export async function resetRoom(code: string): Promise<Room | null> {
+  const room = await getRoom(code);
+  if (!room) return null;
+
+  room.status = 'lobby';
+  room.word = null;
+  room.imposterId = null;
+  room.turnOrder = [];
+  room.currentTurnIndex = 0;
+  room.currentRound = 0;
+  room.votes = {};
+  // Config (totalRounds, turnDuration, category) and players are preserved.
+
+  await saveRoom(room);
+  return room;
+}
+
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
-export function createRoomObject(code: string, host: Player, totalRounds = 3): Room {
+export function createRoomObject(code: string, host: Player): Room {
   return {
     code,
     hostId: host.id,
     players: [host],
     status: 'lobby',
+    // Config defaults — host can change these in the lobby before starting:
+    totalRounds: DEFAULT_TOTAL_ROUNDS,
+    turnDuration: DEFAULT_TURN_DURATION,
+    category: null,
     word: null,
     imposterId: null,
     turnOrder: [],
     currentTurnIndex: 0,
     currentRound: 0,
-    totalRounds,
     votes: {},
     createdAt: Date.now(),
   };

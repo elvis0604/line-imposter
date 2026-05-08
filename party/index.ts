@@ -7,7 +7,7 @@ import type {
   VotingResults,
 } from '../lib/types';
 
-const TURN_DURATION_MS = 5_000;
+const DEFAULT_TURN_DURATION_MS = 5_000;
 /** Max time to wait for the drawer to click Ready before auto-starting the turn. */
 const MAX_PREP_WAIT_MS = 30_000;
 
@@ -25,6 +25,8 @@ interface GameState {
   currentTurnIndex: number;
   currentRound: number;
   totalRounds: number;
+  /** Drawing turn duration in ms (configured by host). */
+  turnDuration: number;
   /** Epoch ms when the current turn expires. 0 = turn not yet started. */
   turnEndTime: number;
 }
@@ -40,6 +42,7 @@ const EMPTY_STATE: GameState = {
   currentTurnIndex: 0,
   currentRound: 1,
   totalRounds: 3,
+  turnDuration: DEFAULT_TURN_DURATION_MS,
   turnEndTime: 0,
 };
 
@@ -127,7 +130,7 @@ export default class GameRoom implements Party.Server {
 
     this.state.inPrepPhase = false;
     this.state.prepDeadline = 0;
-    this.state.turnEndTime = Date.now() + TURN_DURATION_MS;
+    this.state.turnEndTime = Date.now() + this.state.turnDuration;
     // Do NOT reset canvasHistory here — the canvas persists across turns.
     await this.persistState();
 
@@ -138,13 +141,13 @@ export default class GameRoom implements Party.Server {
       turnIndex: this.state.currentTurnIndex,
       round: this.state.currentRound,
       totalRounds: this.state.totalRounds,
-      turnDuration: TURN_DURATION_MS,
-      timeLeft: TURN_DURATION_MS,
+      turnDuration: this.state.turnDuration,
+      timeLeft: this.state.turnDuration,
     });
 
     this.turnTimer = setTimeout(() => {
       this.advanceTurn().catch(console.error);
-    }, TURN_DURATION_MS);
+    }, this.state.turnDuration);
   }
 
   private async advanceTurn() {
@@ -243,7 +246,7 @@ export default class GameRoom implements Party.Server {
           turnIndex: this.state.currentTurnIndex,
           round: this.state.currentRound,
           totalRounds: this.state.totalRounds,
-          turnDuration: TURN_DURATION_MS,
+          turnDuration: this.state.turnDuration,
           timeLeft,
         });
       }
@@ -328,6 +331,7 @@ export default class GameRoom implements Party.Server {
       action?: string;
       turnOrder?: string[];
       totalRounds?: number;
+      turnDuration?: number;
       votedCount?: number;
       totalPlayers?: number;
       results?: VotingResults;
@@ -341,6 +345,7 @@ export default class GameRoom implements Party.Server {
         prepDeadline: 0,
         turnOrder: body.turnOrder ?? [],
         totalRounds: body.totalRounds ?? 3,
+        turnDuration: body.turnDuration ?? DEFAULT_TURN_DURATION_MS,
         currentTurnIndex: 0,
         currentRound: 1,
         turnEndTime: 0,
@@ -366,6 +371,20 @@ export default class GameRoom implements Party.Server {
 
     if (body.action === 'voting_complete' && body.results) {
       this.broadcast({ type: 'voting_complete', results: body.results });
+      return new Response('ok');
+    }
+
+    if (body.action === 'game_reset') {
+      // Clear all game state so the room is back to lobby.
+      if (this.turnTimer) clearTimeout(this.turnTimer);
+      if (this.prepTimer) clearTimeout(this.prepTimer);
+      this.turnTimer = null;
+      this.prepTimer = null;
+      this.state = { ...EMPTY_STATE };
+      this.stateLoaded = true;
+      this.canvasHistory = [];
+      await this.persistState();
+      this.broadcast({ type: 'game_reset' });
       return new Response('ok');
     }
 

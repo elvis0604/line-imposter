@@ -1,10 +1,10 @@
 import { cookies } from 'next/headers';
-import { getRoom, startRoom } from '@/lib/room';
+import { getRoom, startRoom, DEFAULT_TOTAL_ROUNDS, DEFAULT_TURN_DURATION } from '@/lib/room';
 import { PLAYER_ID_COOKIE } from '@/lib/identity';
 import { pickRandomWord } from '@/lib/words';
 
 // POST /api/rooms/[code]/start — host-only, transitions lobby → playing
-export async function POST(_req: Request, ctx: RouteContext<'/api/rooms/[code]/start'>) {
+export async function POST(req: Request, ctx: RouteContext<'/api/rooms/[code]/start'>) {
   const { code } = await ctx.params;
 
   const jar = await cookies();
@@ -27,14 +27,25 @@ export async function POST(_req: Request, ctx: RouteContext<'/api/rooms/[code]/s
     return Response.json({ error: 'Need at least 3 players' }, { status: 422 });
   }
 
-  // Pick word and imposter
-  const { word } = pickRandomWord();
+  // Read config from request body (host's lobby settings), falling back to room defaults.
+  const body = await req.json().catch(() => ({})) as {
+    totalRounds?: number;
+    turnDuration?: number;
+    category?: string | null;
+  };
+
+  const totalRounds = Math.min(10, Math.max(1, body.totalRounds ?? room.totalRounds ?? DEFAULT_TOTAL_ROUNDS));
+  const turnDuration = Math.min(10_000, Math.max(3_000, body.turnDuration ?? room.turnDuration ?? DEFAULT_TURN_DURATION));
+  const category = body.category ?? room.category ?? null;
+
+  // Pick word (respecting chosen category) and randomly select imposter.
+  const { word } = pickRandomWord(category);
   const imposterIndex = Math.floor(Math.random() * room.players.length);
   const imposterId = room.players[imposterIndex].id;
 
-  const updatedRoom = await startRoom(code, { word, imposterId });
+  const updatedRoom = await startRoom(code, { word, imposterId, totalRounds, turnDuration, category });
 
-  // Ping PartyKit so it stores turn state and broadcasts game_started + turn_started
+  // Ping PartyKit so it stores turn state and broadcasts game_started + turn_started.
   const protocol = process.env.NODE_ENV === 'development' ? 'http' : 'https';
   const partyUrl = `${protocol}://${process.env.NEXT_PUBLIC_PARTYKIT_HOST}/parties/main/${code}`;
 
@@ -45,7 +56,8 @@ export async function POST(_req: Request, ctx: RouteContext<'/api/rooms/[code]/s
       body: JSON.stringify({
         action: 'game_started',
         turnOrder: updatedRoom?.turnOrder ?? [],
-        totalRounds: updatedRoom?.totalRounds ?? 3,
+        totalRounds,
+        turnDuration,
       }),
     });
   } catch {
