@@ -25,6 +25,10 @@ import { DEFAULT_TOTAL_ROUNDS, DEFAULT_TURN_DURATION } from '@/lib/room';
 
 interface Props {
   initialRoom: Room;
+  /** Player ID read server-side from the lc_pid cookie. Null if the player
+   *  arrived without a cookie (e.g. via a shared link on a fresh device).
+   *  The socket effect falls back to localStorage so both paths work. */
+  playerId: string | null;
 }
 
 function avatarLetters(name: string) {
@@ -53,7 +57,7 @@ function playJoinChime() {
   }
 }
 
-export default function LobbyClient({ initialRoom }: Props) {
+export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: Props) {
   const router = useRouter();
   const [room, setRoom] = useState<Room>(initialRoom);
   const [connected, setConnected] = useState(false);
@@ -61,15 +65,9 @@ export default function LobbyClient({ initialRoom }: Props) {
   const connectedRef = useRef(true);
   const overlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Both start empty so server and client render identical HTML.
-  // useEffect populates them after hydration (client-only).
-  const [playerId, setPlayerId] = useState('');
-
-  useEffect(() => {
-    const pid = localStorage.getItem('lc_pid') ?? '';
-    setPlayerId(pid);
-  }, []);
-
+  // Derive isHost directly from the server-supplied cookie value so it is
+  // correct on the first render with no hydration flicker.
+  const playerId = serverPlayerId ?? '';
   const isHost = room.hostId === playerId;
 
   // ── Config state (host only) ──────────────────────────────────────────────
@@ -132,7 +130,9 @@ export default function LobbyClient({ initialRoom }: Props) {
   }, [room.code, router]);
 
   useEffect(() => {
-    const pid = localStorage.getItem('lc_pid') ?? '';
+    // Prefer the server-supplied cookie value; fall back to localStorage for
+    // players who arrived via a shared link without a cookie on a fresh device.
+    const pid = serverPlayerId || localStorage.getItem('lc_pid') || '';
     if (!pid) return;
 
     const playerName = room.players.find((p) => p.id === pid)?.name ?? 'Unknown';
@@ -188,7 +188,7 @@ export default function LobbyClient({ initialRoom }: Props) {
       socket.close();
       if (overlayTimerRef.current) clearTimeout(overlayTimerRef.current);
     };
-  }, [room.code, handleMessage]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [room.code, handleMessage, serverPlayerId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Stack gap="lg" w="100%" maw={480}>
