@@ -15,7 +15,7 @@ export default async function RoomPage(props: PageProps<'/room/[code]'>) {
   }
 
   return (
-    <Center mih="100vh" p="md">
+    <Center mih="100dvh" p="md">
       <LobbyClient initialRoom={room} />
     </Center>
   );

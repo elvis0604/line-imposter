@@ -24,7 +24,7 @@ export default async function GamePage(props: PageProps<'/room/[code]/game'>) {
   const word = isImposter ? null : room.word;
 
   return (
-    <Center mih="100vh" p="md">
+    <Center mih="100dvh" p="md">
       <GameClient
         room={room}
         word={word}

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   TextInput,
@@ -10,18 +10,24 @@ import {
   Text,
   Divider,
   Paper,
-  Group,
   Tabs,
-  Alert,
 } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 
+function generateUUID(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function getOrCreatePlayerId(): string {
-  if (typeof window === 'undefined') return '';
   let id = localStorage.getItem('lc_pid');
   if (!id) {
-    id = crypto.randomUUID();
+    id = generateUUID();
     localStorage.setItem('lc_pid', id);
   }
   return id;
@@ -29,12 +35,7 @@ function getOrCreatePlayerId(): string {
 
 export default function HomeForm() {
   const router = useRouter();
-  const [playerId, setPlayerId] = useState('');
-  const [activeTab, setActiveTab] = useState<string | null>('create');
-
-  useEffect(() => {
-    setPlayerId(getOrCreatePlayerId());
-  }, []);
+  const [activeTab, setActiveTab] = useState<'create' | 'join'>('create');
 
   const createForm = useForm({
     initialValues: { playerName: '' },
@@ -63,7 +64,7 @@ export default function HomeForm() {
   });
 
   async function handleCreate(values: typeof createForm.values) {
-    if (!playerId) return;
+    const playerId = getOrCreatePlayerId();
     const res = await fetch('/api/rooms', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -80,7 +81,7 @@ export default function HomeForm() {
   }
 
   async function handleJoin(values: typeof joinForm.values) {
-    if (!playerId) return;
+    const playerId = getOrCreatePlayerId();
     const code = values.code.trim().toUpperCase();
     const res = await fetch(`/api/rooms/${code}/join`, {
       method: 'POST',
@@ -100,7 +101,7 @@ export default function HomeForm() {
     <Paper withBorder p="xl" radius="md" w="100%" maw={400}>
       <Stack gap="md">
         <Stack gap={4} align="center">
-          <Title order={2}>Line Chaser</Title>
+          <Title order={2}>Line Imposter</Title>
           <Text size="sm" c="dimmed" ta="center">
             Drawing &amp; deception — find the imposter
           </Text>
@@ -108,7 +109,10 @@ export default function HomeForm() {
 
         <Divider />
 
-        <Tabs value={activeTab} onChange={setActiveTab}>
+        <Tabs
+          value={activeTab}
+          onChange={(v) => setActiveTab(v as 'create' | 'join')}
+        >
           <Tabs.List grow>
             <Tabs.Tab value="create">Create room</Tabs.Tab>
             <Tabs.Tab value="join">Join room</Tabs.Tab>
@@ -123,7 +127,7 @@ export default function HomeForm() {
                   maxLength={20}
                   {...createForm.getInputProps('playerName')}
                 />
-                <Button type="submit" fullWidth disabled={!playerId}>
+                <Button type="submit" fullWidth>
                   Create room
                 </Button>
               </Stack>
@@ -149,19 +153,13 @@ export default function HomeForm() {
                     joinForm.setFieldValue('code', e.currentTarget.value.toUpperCase())
                   }
                 />
-                <Button type="submit" fullWidth disabled={!playerId}>
+                <Button type="submit" fullWidth>
                   Join room
                 </Button>
               </Stack>
             </form>
           </Tabs.Panel>
         </Tabs>
-
-        {!playerId && (
-          <Alert color="yellow" title="Loading…" variant="light">
-            Initialising player session…
-          </Alert>
-        )}
       </Stack>
     </Paper>
   );

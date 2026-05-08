@@ -62,8 +62,8 @@ export default function Toolbar({
                 component="button"
                 aria-label={c.label}
                 style={{
-                  width: 28,
-                  height: 28,
+                  width: 40,
+                  height: 40,
                   borderRadius: '50%',
                   background: c.value,
                   border: selected
@@ -95,7 +95,7 @@ export default function Toolbar({
                 aria-label={lw.label}
                 style={{
                   width: 44,
-                  height: 36,
+                  height: 44,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -134,7 +134,7 @@ export default function Toolbar({
             aria-label="Eraser"
             style={{
               width: 44,
-              height: 36,
+              height: 44,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',

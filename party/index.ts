@@ -145,12 +145,16 @@ export default class GameRoom implements Party.Server {
       timeLeft: this.state.turnDuration,
     });
 
+    const expectedIndex = this.state.currentTurnIndex;
     this.turnTimer = setTimeout(() => {
-      this.advanceTurn().catch(console.error);
+      this.advanceTurn(expectedIndex).catch(console.error);
     }, this.state.turnDuration);
   }
 
-  private async advanceTurn() {
+  private async advanceTurn(expectedIndex?: number) {
+    // Idempotency guard: bail out if the turn has already been advanced by a
+    // concurrent code path (e.g. skip_turn message racing with the turnTimer).
+    if (expectedIndex !== undefined && this.state.currentTurnIndex !== expectedIndex) return;
     this.state.currentTurnIndex++;
 
     if (this.state.currentTurnIndex >= this.state.turnOrder.length) {
@@ -176,29 +180,30 @@ export default class GameRoom implements Party.Server {
   /**
    * Restart whichever timer is appropriate after a hot-reload / server restart.
    * Called once per onConnect when the in-memory timers are gone.
+   *
+   * IMPORTANT: always go through setTimeout (even with delay 0) rather than
+   * calling advanceTurn/startTurn directly. This ensures this.turnTimer /
+   * this.prepTimer is set synchronously before any other concurrent onConnect
+   * handler runs, so the guard at the top of each branch fires correctly and
+   * we never double-advance the turn index.
    */
   private restartTimersAfterRestore() {
     if (this.state.inPrepPhase) {
       if (this.prepTimer) return; // already running
-      const remaining = this.state.prepDeadline - Date.now();
-      if (remaining <= 0) {
-        // Fallback deadline passed while server was down — start the turn now.
+      const remaining = Math.max(0, this.state.prepDeadline - Date.now());
+      this.prepTimer = setTimeout(() => {
         this.startTurn().catch(console.error);
-      } else {
-        this.prepTimer = setTimeout(() => {
-          this.startTurn().catch(console.error);
-        }, remaining);
-      }
+      }, remaining);
     } else {
       if (this.turnTimer) return; // already running
-      const remaining = this.state.turnEndTime - Date.now();
-      if (remaining <= 0) {
-        this.advanceTurn().catch(console.error);
-      } else {
-        this.turnTimer = setTimeout(() => {
-          this.advanceTurn().catch(console.error);
-        }, remaining);
-      }
+      // turnEndTime === 0 means startTurn hasn't run yet (game_started just
+      // fired but the first startTurn hasn't persisted yet).  Nothing to restore.
+      if (this.state.turnEndTime === 0) return;
+      const remaining = Math.max(0, this.state.turnEndTime - Date.now());
+      const expectedIndex = this.state.currentTurnIndex;
+      this.turnTimer = setTimeout(() => {
+        this.advanceTurn(expectedIndex).catch(console.error);
+      }, remaining);
     }
   }
 
@@ -290,7 +295,7 @@ export default class GameRoom implements Party.Server {
       if (senderId === currentDrawer) {
         if (this.turnTimer) clearTimeout(this.turnTimer);
         this.turnTimer = null;
-        await this.advanceTurn();
+        await this.advanceTurn(this.state.currentTurnIndex);
       }
       return;
     }
@@ -355,8 +360,11 @@ export default class GameRoom implements Party.Server {
       await this.persistState();
 
       this.broadcast({ type: 'game_started' });
-      // Start first turn immediately so turnEndTime is set before game clients connect.
-      await this.startTurn();
+      // Start the first prep phase so player[0] gets the same ready-up window
+      // as every other player.  Calling startTurn() here would begin the drawing
+      // countdown before clients have navigated to the game page, causing
+      // player[0]'s turn to expire on the reveal/loading screen.
+      await this.startPrepPhase();
       return new Response('ok');
     }
 

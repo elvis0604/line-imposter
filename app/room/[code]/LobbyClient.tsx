@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import PartySocket from 'partysocket';
 import {
@@ -31,11 +31,35 @@ function avatarLetters(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
+/** Short two-tone chime using the Web Audio API — no dependency required. */
+function playJoinChime() {
+  try {
+    const ctx = new AudioContext();
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.18, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+    gain.connect(ctx.destination);
+
+    [523.25, 659.25].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      osc.connect(gain);
+      osc.start(ctx.currentTime + i * 0.12);
+      osc.stop(ctx.currentTime + i * 0.12 + 0.35);
+    });
+  } catch {
+    // AudioContext may be blocked before user interaction — silently ignore
+  }
+}
+
 export default function LobbyClient({ initialRoom }: Props) {
   const router = useRouter();
   const [room, setRoom] = useState<Room>(initialRoom);
   const [connected, setConnected] = useState(false);
   const [starting, setStarting] = useState(false);
+  const connectedRef = useRef(true);
+  const overlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Both start empty so server and client render identical HTML.
   // useEffect populates them after hydration (client-only).
@@ -86,6 +110,7 @@ export default function LobbyClient({ initialRoom }: Props) {
           if (r.players.some((p) => p.id === msg.player.id)) return r;
           return { ...r, players: [...r.players, msg.player] };
         });
+        playJoinChime();
         notifications.show({
           color: 'teal',
           message: `${msg.player.name} joined`,
@@ -112,14 +137,43 @@ export default function LobbyClient({ initialRoom }: Props) {
 
     const playerName = room.players.find((p) => p.id === pid)?.name ?? 'Unknown';
 
+    // Set to true in cleanup before socket.close() so the async 'close' event
+    // that fires after the handshake doesn't schedule the disconnect notification
+    // on whatever page the user has navigated to by then.
+    let intentionalClose = false;
+
     const socket = new PartySocket({
       host: process.env.NEXT_PUBLIC_PARTYKIT_HOST!,
       room: room.code,
       query: { playerId: pid, playerName },
     });
 
-    socket.addEventListener('open', () => setConnected(true));
-    socket.addEventListener('close', () => setConnected(false));
+    socket.addEventListener('open', () => {
+      connectedRef.current = true;
+      setConnected(true);
+      if (overlayTimerRef.current) clearTimeout(overlayTimerRef.current);
+      notifications.hide('lobby-disconnect');
+    });
+    socket.addEventListener('close', () => {
+      connectedRef.current = false;
+      setConnected(false);
+      // Don't schedule the notification when we deliberately closed the socket
+      // (e.g. navigating to the game page). The 'close' event fires asynchronously
+      // after socket.close(), which is after the cleanup's clearTimeout has run.
+      if (intentionalClose) return;
+      overlayTimerRef.current = setTimeout(() => {
+        if (!connectedRef.current) {
+          notifications.show({
+            id: 'lobby-disconnect',
+            color: 'red',
+            title: 'Connection lost',
+            message: 'Trying to reconnect…',
+            autoClose: false,
+            loading: true,
+          });
+        }
+      }, 5000);
+    });
     socket.addEventListener('message', (event) => {
       try {
         const msg = JSON.parse(event.data) as ServerMessage;
@@ -129,7 +183,11 @@ export default function LobbyClient({ initialRoom }: Props) {
       }
     });
 
-    return () => socket.close();
+    return () => {
+      intentionalClose = true;
+      socket.close();
+      if (overlayTimerRef.current) clearTimeout(overlayTimerRef.current);
+    };
   }, [room.code, handleMessage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (

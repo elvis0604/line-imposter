@@ -120,9 +120,19 @@ const DrawingCanvas = forwardRef<DrawingCanvasHandle, DrawingCanvasProps>(
       [isDrawingAllowed, getNormalizedPos],
     );
 
+    // Cancel any in-progress stroke the moment it's no longer our turn.
+    // Without this, isDrawing.current stays true across a turn transition and
+    // the next pointerMove (while still held) would still draw.
+    useEffect(() => {
+      if (!isDrawingAllowed) {
+        isDrawing.current = false;
+        lastPos.current = null;
+      }
+    }, [isDrawingAllowed]);
+
     const handlePointerMove = useCallback(
       (e: React.PointerEvent<HTMLCanvasElement>) => {
-        if (!isDrawing.current || !lastPos.current) return;
+        if (!isDrawingAllowed || !isDrawing.current || !lastPos.current) return;
         const canvas = canvasRef.current;
         if (!canvas) return;
         const ctx = canvas.getContext('2d');
@@ -143,7 +153,7 @@ const DrawingCanvas = forwardRef<DrawingCanvasHandle, DrawingCanvasProps>(
         onDraw(event);
         lastPos.current = pos;
       },
-      [color, lineWidth, tool, getNormalizedPos, onDraw],
+      [isDrawingAllowed, color, lineWidth, tool, getNormalizedPos, onDraw],
     );
 
     const handlePointerUp = useCallback(
