@@ -10,6 +10,8 @@ import type {
 const DEFAULT_TURN_DURATION_MS = 5_000;
 /** Max time to wait for the drawer to click Ready before auto-starting the turn. */
 const MAX_PREP_WAIT_MS = 30_000;
+/** Max time to wait for all players to acknowledge the reveal before auto-starting. */
+const MAX_REVEAL_WAIT_MS = 30_000;
 
 // ── Persisted game state (written to room.storage on every mutation) ──────────
 
@@ -17,6 +19,12 @@ interface GameState {
   gameStarted: boolean;
   /** True after all rounds complete — clients that reconnect during voting/results get game_over. */
   gameOver: boolean;
+  /** True while waiting for all players to acknowledge the reveal screen. */
+  inRevealPhase: boolean;
+  /** Epoch ms of the reveal fallback deadline (auto-starts if not everyone acks). */
+  revealDeadline: number;
+  /** Player IDs that have clicked "Got it" on the reveal screen. */
+  revealAcknowledgedIds: string[];
   /** True while waiting for the drawer to click Ready between turns. */
   inPrepPhase: boolean;
   /** Epoch ms of the fallback deadline (auto-starts the turn if drawer never responds). */
@@ -36,6 +44,9 @@ const STORAGE_KEY = 'gameState';
 const EMPTY_STATE: GameState = {
   gameStarted: false,
   gameOver: false,
+  inRevealPhase: false,
+  revealDeadline: 0,
+  revealAcknowledgedIds: [],
   inPrepPhase: false,
   prepDeadline: 0,
   turnOrder: [],
@@ -59,6 +70,7 @@ export default class GameRoom implements Party.Server {
 
   private turnTimer: ReturnType<typeof setTimeout> | null = null;
   private prepTimer: ReturnType<typeof setTimeout> | null = null;
+  private revealTimer: ReturnType<typeof setTimeout> | null = null;
   private canvasHistory: BroadcastedDrawEvent[] = [];
 
   constructor(readonly room: Party.Room) {}
@@ -94,6 +106,61 @@ export default class GameRoom implements Party.Server {
     connection.send(JSON.stringify(msg));
   }
 
+  /** IDs of players in turnOrder who currently have an open connection. */
+  private connectedPlayerIds(): string[] {
+    const ids = new Set<string>();
+    for (const conn of this.room.getConnections()) {
+      const cs = conn.state as ConnectionState | null;
+      if (cs?.playerId && this.state.turnOrder.includes(cs.playerId)) {
+        ids.add(cs.playerId);
+      }
+    }
+    return [...ids];
+  }
+
+  /**
+   * Called after each reveal_acknowledged and after each disconnect during
+   * the reveal phase. Starts the prep phase if every connected player has
+   * acknowledged (disconnected players don't block the game).
+   */
+  private async advanceRevealIfReady() {
+    const connected = this.connectedPlayerIds();
+    if (connected.length === 0) return;
+    const allReady = connected.every((id) =>
+      this.state.revealAcknowledgedIds.includes(id),
+    );
+    if (!allReady) return;
+
+    if (this.revealTimer) clearTimeout(this.revealTimer);
+    this.revealTimer = null;
+    this.state.inRevealPhase = false;
+    await this.persistState();
+    await this.startPrepPhase();
+  }
+
+  /**
+   * Wait for all players to acknowledge the reveal screen before starting
+   * the first prep phase. A 30 s timeout auto-advances if anyone is AFK.
+   */
+  private async startRevealPhase() {
+    if (this.revealTimer) clearTimeout(this.revealTimer);
+
+    this.state.inRevealPhase = true;
+    // Pre-acknowledge dev bots — they never connect, so mark them ready immediately
+    // so the progress bar and readyCount are accurate in quick-start dev sessions.
+    this.state.revealAcknowledgedIds = this.state.turnOrder.filter((id) =>
+      id.startsWith('dev-bot-'),
+    );
+    this.state.revealDeadline = Date.now() + MAX_REVEAL_WAIT_MS;
+    await this.persistState();
+
+    this.revealTimer = setTimeout(async () => {
+      this.state.inRevealPhase = false;
+      await this.persistState();
+      await this.startPrepPhase();
+    }, MAX_REVEAL_WAIT_MS);
+  }
+
   /**
    * Broadcast a "get ready" announcement and wait for the drawer to click Ready.
    * A 30 s fallback timer auto-starts the turn if the drawer never responds.
@@ -121,6 +188,13 @@ export default class GameRoom implements Party.Server {
     this.prepTimer = setTimeout(() => {
       this.startTurn().catch(console.error);
     }, MAX_PREP_WAIT_MS);
+
+    // Dev bots never connect, so if the current drawer is a bot skip the wait.
+    if (drawerId.startsWith('dev-bot-')) {
+      if (this.prepTimer) clearTimeout(this.prepTimer);
+      this.prepTimer = null;
+      await this.startTurn();
+    }
   }
 
   private async startTurn() {
@@ -188,6 +262,16 @@ export default class GameRoom implements Party.Server {
    * we never double-advance the turn index.
    */
   private restartTimersAfterRestore() {
+    if (this.state.inRevealPhase) {
+      if (this.revealTimer) return;
+      const remaining = Math.max(0, this.state.revealDeadline - Date.now());
+      this.revealTimer = setTimeout(async () => {
+        this.state.inRevealPhase = false;
+        await this.persistState();
+        await this.startPrepPhase();
+      }, remaining);
+      return;
+    }
     if (this.state.inPrepPhase) {
       if (this.prepTimer) return; // already running
       const remaining = Math.max(0, this.state.prepDeadline - Date.now());
@@ -230,7 +314,21 @@ export default class GameRoom implements Party.Server {
       // Game in progress: restart whichever timer was lost, then send catch-up.
       this.restartTimersAfterRestore();
 
-      if (this.state.inPrepPhase) {
+      if (this.state.inRevealPhase) {
+        // Player reconnected during the reveal window — send current progress
+        // so their waiting screen shows the right count.
+        this.send(connection, {
+          type: 'reveal_progress',
+          readyCount: this.state.revealAcknowledgedIds.length,
+          totalPlayers: this.state.turnOrder.length,
+          deadline: this.state.revealDeadline,
+        });
+      } else if (this.state.inPrepPhase) {
+        // Send accumulated canvas history — the canvas persists across all turns,
+        // so a late joiner needs it even during the prep window.
+        if (this.canvasHistory.length > 0) {
+          this.send(connection, { type: 'canvas_history', events: this.canvasHistory });
+        }
         // Player reconnected during the prep window — resend the announcement.
         this.send(connection, {
           type: 'turn_prep',
@@ -313,6 +411,28 @@ export default class GameRoom implements Party.Server {
       }
       return;
     }
+
+    if (msg.type === 'reveal_acknowledged') {
+      await this.ensureState();
+      if (!this.state.inRevealPhase) return;
+
+      const cs = sender.state as ConnectionState | null;
+      const senderId = cs?.playerId ?? sender.id;
+
+      // Deduplicate — ignore if player already acknowledged.
+      if (this.state.revealAcknowledgedIds.includes(senderId)) return;
+      this.state.revealAcknowledgedIds.push(senderId);
+      await this.persistState();
+
+      const readyCount = this.state.revealAcknowledgedIds.length;
+      const totalPlayers = this.state.turnOrder.length;
+      this.broadcast({ type: 'reveal_progress', readyCount, totalPlayers, deadline: this.state.revealDeadline });
+
+      // Check if all currently-connected players have acknowledged.
+      // Disconnected players are skipped so they don't block the game.
+      await this.advanceRevealIfReady();
+      return;
+    }
   }
 
   async onClose(connection: Party.Connection) {
@@ -320,6 +440,11 @@ export default class GameRoom implements Party.Server {
     if (!cs) return;
     if (!this.state.gameStarted) {
       this.broadcast({ type: 'player_left', playerId: cs.playerId });
+    }
+    // A disconnect during the reveal phase might unblock the remaining
+    // connected players (they may all have already acknowledged).
+    if (this.state.inRevealPhase) {
+      await this.advanceRevealIfReady();
     }
     console.log(`[${this.room.id}] disconnect: ${cs.playerName} (${cs.playerId})`);
   }
@@ -347,6 +472,9 @@ export default class GameRoom implements Party.Server {
       this.state = {
         gameStarted: true,
         gameOver: false,
+        inRevealPhase: false,
+        revealDeadline: 0,
+        revealAcknowledgedIds: [],
         inPrepPhase: false,
         prepDeadline: 0,
         turnOrder: body.turnOrder ?? [],
@@ -361,11 +489,9 @@ export default class GameRoom implements Party.Server {
       await this.persistState();
 
       this.broadcast({ type: 'game_started' });
-      // Start the first prep phase so player[0] gets the same ready-up window
-      // as every other player.  Calling startTurn() here would begin the drawing
-      // countdown before clients have navigated to the game page, causing
-      // player[0]'s turn to expire on the reveal/loading screen.
-      await this.startPrepPhase();
+      // Wait for all players to acknowledge the reveal screen before starting
+      // the first prep phase, so no one misses a turn while still reading their role.
+      await this.startRevealPhase();
       return new Response('ok');
     }
 
@@ -387,8 +513,10 @@ export default class GameRoom implements Party.Server {
       // Clear all game state so the room is back to lobby.
       if (this.turnTimer) clearTimeout(this.turnTimer);
       if (this.prepTimer) clearTimeout(this.prepTimer);
+      if (this.revealTimer) clearTimeout(this.revealTimer);
       this.turnTimer = null;
       this.prepTimer = null;
+      this.revealTimer = null;
       this.state = { ...EMPTY_STATE };
       this.stateLoaded = true;
       this.canvasHistory = [];

@@ -56,8 +56,28 @@ export async function POST(req: Request, ctx: RouteContext<'/api/rooms/[code]/vo
   await redis.expire(votesKey, ROOM_TTL_SECONDS);
 
   // Atomically increment the vote counter.
-  const voteCount = await redis.incr(countKey);
+  let voteCount = await redis.incr(countKey);
   await redis.expire(countKey, ROOM_TTL_SECONDS);
+
+  // Dev bots never connect — auto-cast their votes so the tally completes.
+  // Each bot votes for a random player that isn't itself.
+  if (process.env.NODE_ENV === 'development') {
+    const devBots = room.players.filter(
+      (p) => p.id.startsWith('dev-bot-') && p.id !== playerId,
+    );
+    for (const bot of devBots) {
+      const alreadyVoted = await redis.hsetnx(votesKey, bot.id, '');
+      // Check if bot already has a vote recorded; 0 means field existed already.
+      if (alreadyVoted === 0) continue; // already voted in a previous call
+      // Pick a random target that isn't the bot itself.
+      const candidates = room.players.filter((p) => p.id !== bot.id);
+      const target = candidates[Math.floor(Math.random() * candidates.length)];
+      await redis.hset(votesKey, { [bot.id]: target.id });
+      await redis.expire(votesKey, ROOM_TTL_SECONDS);
+      voteCount = await redis.incr(countKey);
+      await redis.expire(countKey, ROOM_TTL_SECONDS);
+    }
+  }
 
   const totalPlayers = room.players.length;
   const protocol = process.env.NODE_ENV === 'development' ? 'http' : 'https';

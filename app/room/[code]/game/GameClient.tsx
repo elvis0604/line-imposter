@@ -38,6 +38,7 @@ import type {
 } from '@/lib/types';
 import DrawingCanvas, { type DrawingCanvasHandle } from './DrawingCanvas';
 import Toolbar from './Toolbar';
+import DevPanel from './DevPanel';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -110,6 +111,13 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
   const [votingLoading, setVotingLoading] = useState(false);
   const [votingResults, setVotingResults] = useState<VotingResults | null>(null);
 
+  // ── Reveal-acknowledged state ──────────────────────────────────────────────
+  const [revealAcknowledged, setRevealAcknowledged] = useState(false);
+  const [revealReadyCount, setRevealReadyCount] = useState(0);
+  const [revealTimeLeftMs, setRevealTimeLeftMs] = useState(0);
+  const revealDeadlineRef = useRef(0);
+  const revealRafRef = useRef<number>(0);
+
   // ── Play-again state ──────────────────────────────────────────────────────
   const [playAgainLoading, setPlayAgainLoading] = useState(false);
 
@@ -122,13 +130,43 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
   const canvasRef = useRef<DrawingCanvasHandle>(null);
   const socketRef = useRef<PartySocket | null>(null);
   /**
-   * Tracks the phase the server wants us to be in.
-   * Server messages update this freely; the actual gamePhase state is only
-   * updated once the player has dismissed the reveal screen.
+   * Buffer for canvas events (history snapshot + live draw strokes) that
+   * arrive while the canvas isn't mounted yet (i.e. during the reveal phase).
+   * Flushed onto the canvas as soon as the player dismisses the reveal screen.
    */
-  const desiredPhaseRef = useRef<GamePhase>('playing');
+  const pendingCanvasEventsRef = useRef<BroadcastedDrawEvent[]>([]);
+  /**
+   * Tracks the phase the server wants us to be in.
+   * Starts as 'reveal' — updated when turn_prep/turn_started arrive.
+   * The actual gamePhase state is only updated once the player has
+   * acknowledged the reveal screen.
+   */
+  const desiredPhaseRef = useRef<GamePhase>('reveal');
   /** Set to true when the player clicks "Got it" on the reveal screen. */
   const revealDismissedRef = useRef(false);
+
+  // ── Flush buffered canvas events once the canvas mounts ──────────────────
+  // AnimatePresence (mode="wait") delays mounting of DrawingCanvas until
+  // after the reveal exit animation (~150ms). A simple useEffect([gamePhase])
+  // fires too early — the canvas ref is still null. Instead, poll with rAF
+  // until canvasRef is populated, then replay everything in the buffer.
+  useEffect(() => {
+    if (gamePhase !== 'playing' && gamePhase !== 'prep') return;
+
+    let raf: number;
+    const flush = () => {
+      if (!canvasRef.current) {
+        raf = requestAnimationFrame(flush);
+        return;
+      }
+      if (pendingCanvasEventsRef.current.length > 0) {
+        canvasRef.current.loadHistory(pendingCanvasEventsRef.current);
+        pendingCanvasEventsRef.current = [];
+      }
+    };
+    raf = requestAnimationFrame(flush);
+    return () => cancelAnimationFrame(raf);
+  }, [gamePhase]);
 
   // ── Timer countdown ───────────────────────────────────────────────────────
   const startCountdown = useCallback((endTime: number) => {
@@ -147,6 +185,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
 
   useEffect(() => () => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    if (revealRafRef.current) cancelAnimationFrame(revealRafRef.current);
   }, []);
 
   // ── PartySocket message handler ───────────────────────────────────────────
@@ -155,17 +194,45 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
       switch (msg.type) {
         case 'draw': {
           if (msg.event.drawerId === playerId) return;
-          canvasRef.current?.replayEvent(msg.event as BroadcastedDrawEvent);
+          if (canvasRef.current) {
+            canvasRef.current.replayEvent(msg.event as BroadcastedDrawEvent);
+          } else {
+            // Canvas not mounted yet (reveal screen) — buffer for later.
+            pendingCanvasEventsRef.current.push(msg.event as BroadcastedDrawEvent);
+          }
           break;
         }
 
         case 'canvas_history': {
-          canvasRef.current?.loadHistory(msg.events);
+          if (canvasRef.current) {
+            canvasRef.current.loadHistory(msg.events);
+          } else {
+            // Canvas not mounted yet — replace buffer with the full snapshot,
+            // then any subsequent live draw events will be appended on top.
+            pendingCanvasEventsRef.current = [...msg.events];
+          }
           break;
         }
 
         case 'canvas_clear': {
+          pendingCanvasEventsRef.current = [];
           canvasRef.current?.clear();
+          break;
+        }
+
+        case 'reveal_progress': {
+          setRevealReadyCount(msg.readyCount);
+          // Start (or update) the countdown using the server deadline.
+          if (revealDeadlineRef.current !== msg.deadline) {
+            revealDeadlineRef.current = msg.deadline;
+            if (revealRafRef.current) cancelAnimationFrame(revealRafRef.current);
+            const tick = () => {
+              const remaining = Math.max(0, revealDeadlineRef.current - Date.now());
+              setRevealTimeLeftMs(remaining);
+              if (remaining > 0) revealRafRef.current = requestAnimationFrame(tick);
+            };
+            revealRafRef.current = requestAnimationFrame(tick);
+          }
           break;
         }
 
@@ -368,7 +435,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
             exit="hidden"
             transition={fadeTrans}
           >
-            <Stack gap="lg" w="100%" maw={440}>
+            <Stack gap="lg" w="100%" maw={560}>
               <Paper
                 withBorder
                 p="xl"
@@ -404,21 +471,63 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                       <Text size="sm" c="dimmed" ta="center">
                         Draw this word when it&apos;s your turn. Find the imposter!
                       </Text>
-                      <Badge color="teal" variant="light" size="lg" mt="xs">Word: {word}</Badge>
+                      <Badge color="teal" variant="light" size="lg" mt="xs" style={{ whiteSpace: 'normal', height: 'auto', textAlign: 'center' }}>Word: {word}</Badge>
                     </Stack>
                   )}
 
-                  <Button
-                    size="md"
-                    color={isImposter ? 'red' : 'teal'}
-                    fullWidth
-                    onClick={() => {
-                      revealDismissedRef.current = true;
-                      setGamePhase(desiredPhaseRef.current);
-                    }}
-                  >
-                    Got it — let&apos;s draw
-                  </Button>
+                  {revealAcknowledged ? (
+                    <Stack gap="sm" w="100%" align="center">
+                      <Progress
+                        value={(Math.max(revealReadyCount, 1) / room.players.length) * 100}
+                        color={isImposter ? 'red' : 'teal'}
+                        size="sm"
+                        radius="xl"
+                        w="100%"
+                        animated={revealReadyCount < room.players.length}
+                      />
+                      <Group gap="xs">
+                        <Loader size="xs" color={isImposter ? 'red' : 'teal'} />
+                        <Text size="sm" c="dimmed">
+                          Waiting for{' '}
+                          {room.players.length - Math.max(revealReadyCount, 1)} more player
+                          {room.players.length - Math.max(revealReadyCount, 1) !== 1 ? 's' : ''}
+                          …
+                        </Text>
+                        {revealTimeLeftMs > 0 && (
+                          <Text size="sm" c="dimmed" ff="monospace">
+                            ({Math.ceil(revealTimeLeftMs / 1000)}s)
+                          </Text>
+                        )}
+                      </Group>
+                    </Stack>
+                  ) : (
+                    <Stack gap="xs" w="100%">
+                      {revealTimeLeftMs > 0 && (
+                        <Text size="xs" c="dimmed" ta="center">
+                          Auto-starting in {Math.ceil(revealTimeLeftMs / 1000)}s
+                        </Text>
+                      )}
+                      <Button
+                        size="md"
+                        color={isImposter ? 'red' : 'teal'}
+                        fullWidth
+                        onClick={() => {
+                          revealDismissedRef.current = true;
+                          setRevealAcknowledged(true);
+                          socketRef.current?.send(
+                            JSON.stringify({ type: 'reveal_acknowledged' }),
+                          );
+                          // Edge case: server already advanced past reveal
+                          // (timeout fired before player clicked).
+                          if (desiredPhaseRef.current !== 'reveal') {
+                            setGamePhase(desiredPhaseRef.current);
+                          }
+                        }}
+                      >
+                        Got it — let&apos;s draw
+                      </Button>
+                    </Stack>
+                  )}
                 </Stack>
               </Paper>
             </Stack>
@@ -435,7 +544,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
             exit="hidden"
             transition={fadeTrans}
           >
-            <Stack gap="lg" w="100%" maw={480}>
+            <Stack gap="lg" w="100%" maw={560}>
               <Stack align="center" gap={4}>
                 <Title order={2}>Who is the imposter?</Title>
                 <Text c="dimmed" size="sm">Vote for the player you think doesn&apos;t know the word.</Text>
@@ -523,7 +632,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
               );
 
               return (
-                <Stack gap="lg" w="100%" maw={480}>
+                <Stack gap="lg" w="100%" maw={560}>
                   <Paper
                     withBorder
                     p="xl"
@@ -552,14 +661,27 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                     </Stack>
                   </Paper>
 
-                  <Group grow wrap="wrap">
+                   <Group grow wrap="wrap">
                     <Paper withBorder p="md" radius="md">
-                      <Stack gap={4} align="center">
-                        <Text size="xs" tt="uppercase" fw={700} c="dimmed">The word was</Text>
-                        <Badge color="teal" variant="light" size="xl" radius="md">
-                          {revealedWord}
-                        </Badge>
-                      </Stack>
+                       <Stack gap={4} align="center">
+                         <Text size="xs" tt="uppercase" fw={700} c="dimmed">The word was</Text>
+                         <Text
+                           fw={700}
+                           size="lg"
+                           ta="center"
+                           px="sm"
+                           py={4}
+                           w="100%"
+                           style={{
+                             background: 'var(--mantine-color-teal-light)',
+                             color: 'var(--mantine-color-teal-light-color)',
+                             borderRadius: 'var(--mantine-radius-md)',
+                             wordBreak: 'break-word',
+                           }}
+                         >
+                           {revealedWord}
+                         </Text>
+                       </Stack>
                     </Paper>
 
                     <Paper withBorder p="md" radius="md">
@@ -717,7 +839,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                   {isImposter ? (
                     <Badge color="red" variant="light">Imposter — blend in!</Badge>
                   ) : (
-                    <Badge color="teal" variant="light">Word: {word}</Badge>
+                    <Badge color="teal" variant="light" style={{ whiteSpace: 'normal', height: 'auto', textAlign: 'center' }}>Word: {word}</Badge>
                   )}
                   {isMyTurn && <Badge color="violet" variant="filled">Draw now!</Badge>}
                 </Group>
@@ -820,6 +942,23 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
         )}
 
       </AnimatePresence>
+
+      {process.env.NODE_ENV === 'development' && (
+        <DevPanel
+          currentPhase={gamePhase}
+          room={room}
+          word={word}
+          playerId={playerId}
+          onPhase={(phase) => {
+            desiredPhaseRef.current = phase;
+            setGamePhase(phase);
+          }}
+          setVotingResults={setVotingResults}
+          setRevealAcknowledged={setRevealAcknowledged}
+          setRevealReadyCount={setRevealReadyCount}
+          setMyVote={setMyVote}
+        />
+      )}
     </>
   );
 }

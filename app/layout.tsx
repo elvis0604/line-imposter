@@ -9,6 +9,7 @@ import {
   mantineHtmlProps,
 } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
+import DevNav from './components/DevNav';
 
 const theme = createTheme({
   primaryColor: 'violet',
@@ -42,6 +43,7 @@ export default function RootLayout({
         <MantineProvider theme={theme} defaultColorScheme="dark">
           <Notifications />
           {children}
+          {process.env.NODE_ENV === 'development' && <DevNav />}
         </MantineProvider>
       </body>
     </html>

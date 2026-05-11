@@ -217,7 +217,7 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
   }, [room.code, handleMessage, serverPlayerId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <Stack gap="lg" w="100%" maw={600}>
+    <Stack gap="lg" w="100%" maw={560}>
       {/* Header */}
       <Group justify="space-between" align="flex-start">
         <Stack gap={2}>

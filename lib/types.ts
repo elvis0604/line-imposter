@@ -65,7 +65,9 @@ export interface VotingResults {
 export type ServerMessage =
   | { type: 'player_joined'; player: Player }
   | { type: 'player_left'; playerId: string }
+  | { type: 'player_kicked'; playerId: string }
   | { type: 'game_started' }
+  | { type: 'reveal_progress'; readyCount: number; totalPlayers: number; deadline: number }
   | { type: 'draw'; event: BroadcastedDrawEvent }
   | { type: 'canvas_history'; events: BroadcastedDrawEvent[] }
   | { type: 'canvas_clear' }
@@ -88,7 +90,6 @@ export type ServerMessage =
     }
   | { type: 'game_over' }
   | { type: 'game_reset' }
-  | { type: 'player_kicked'; playerId: string }
   | { type: 'vote_cast'; votedCount: number; totalPlayers: number }
   | { type: 'voting_complete'; results: VotingResults };
 
@@ -97,4 +98,5 @@ export type ClientMessage =
   | { type: 'ping' }
   | { type: 'draw'; event: DrawEvent }
   | { type: 'skip_turn' }
-  | { type: 'player_ready' };
+  | { type: 'player_ready' }
+  | { type: 'reveal_acknowledged' };
