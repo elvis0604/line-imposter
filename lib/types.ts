@@ -88,6 +88,7 @@ export type ServerMessage =
     }
   | { type: 'game_over' }
   | { type: 'game_reset' }
+  | { type: 'player_kicked'; playerId: string }
   | { type: 'vote_cast'; votedCount: number; totalPlayers: number }
   | { type: 'voting_complete'; results: VotingResults };
 

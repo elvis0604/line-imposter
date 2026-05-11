@@ -101,6 +101,15 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
     }
   }
 
+  async function handleKick(targetPlayerId: string) {
+    await fetch(`/api/rooms/${room.code}/kick`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetPlayerId }),
+    });
+    // PartyKit broadcasts player_kicked → handleMessage removes them from the list.
+  }
+
   const handleMessage = useCallback((msg: ServerMessage) => {
     switch (msg.type) {
       case 'player_joined':
@@ -121,6 +130,23 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
           ...r,
           players: r.players.filter((p) => p.id !== msg.playerId),
         }));
+        break;
+
+      case 'player_kicked':
+        if (msg.playerId === playerId) {
+          notifications.show({
+            color: 'red',
+            title: 'Removed from lobby',
+            message: 'The host removed you from the room.',
+            autoClose: 4000,
+          });
+          router.push('/');
+        } else {
+          setRoom((r) => ({
+            ...r,
+            players: r.players.filter((p) => p.id !== msg.playerId),
+          }));
+        }
         break;
 
       case 'game_started':
@@ -191,7 +217,7 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
   }, [room.code, handleMessage, serverPlayerId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <Stack gap="lg" w="100%" maw={480}>
+    <Stack gap="lg" w="100%" maw={600}>
       {/* Header */}
       <Group justify="space-between" align="flex-start">
         <Stack gap={2}>
@@ -255,6 +281,8 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
             player={player}
             isHost={room.hostId === player.id}
             isMe={player.id === playerId}
+            canKick={isHost && room.hostId !== player.id}
+            onKick={() => handleKick(player.id)}
           />
         ))}
       </Stack>
@@ -331,10 +359,14 @@ function PlayerRow({
   player,
   isHost,
   isMe,
+  canKick,
+  onKick,
 }: {
   player: Player;
   isHost: boolean;
   isMe: boolean;
+  canKick: boolean;
+  onKick: () => void;
 }) {
   return (
     <Paper withBorder px="md" py="sm" radius="md">
@@ -352,11 +384,32 @@ function PlayerRow({
             )}
           </Text>
         </Group>
-        {isHost && (
-          <Badge color="yellow" variant="light" size="xs">
-            Host
-          </Badge>
-        )}
+        <Group gap="xs">
+          {isHost && (
+            <Badge color="yellow" variant="light" size="xs">
+              Host
+            </Badge>
+          )}
+          {canKick && (
+            <Button
+              size="xs"
+              variant="light"
+              color="red"
+              onClick={onKick}
+              px={6}
+              styles={{
+                root: {
+                  '&:hover': {
+                    backgroundColor: 'var(--mantine-color-red-6)',
+                    color: 'white',
+                  },
+                },
+              }}
+            >
+              Kick
+            </Button>
+          )}
+        </Group>
       </Group>
     </Paper>
   );

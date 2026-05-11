@@ -340,6 +340,7 @@ export default class GameRoom implements Party.Server {
       votedCount?: number;
       totalPlayers?: number;
       results?: VotingResults;
+      targetPlayerId?: string;
     };
 
     if (body.action === 'game_started') {
@@ -393,6 +394,21 @@ export default class GameRoom implements Party.Server {
       this.canvasHistory = [];
       await this.persistState();
       this.broadcast({ type: 'game_reset' });
+      return new Response('ok');
+    }
+
+    if (body.action === 'player_kicked' && body.targetPlayerId) {
+      const targetPlayerId = body.targetPlayerId;
+      // Broadcast to all clients first so the kicked player's UI can react.
+      this.broadcast({ type: 'player_kicked', playerId: targetPlayerId });
+      // Close the kicked player's WebSocket connection if still open.
+      for (const conn of this.room.getConnections()) {
+        const cs = conn.state as ConnectionState | null;
+        if (cs?.playerId === targetPlayerId) {
+          conn.close(4001, 'kicked');
+          break;
+        }
+      }
       return new Response('ok');
     }
 

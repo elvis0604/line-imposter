@@ -30,6 +30,15 @@ export async function addPlayerToRoom(code: string, player: Player): Promise<Roo
   return room;
 }
 
+export async function removePlayerFromRoom(code: string, targetPlayerId: string): Promise<Room | null> {
+  const room = await getRoom(code);
+  if (!room) return null;
+
+  room.players = room.players.filter((p) => p.id !== targetPlayerId);
+  await saveRoom(room);
+  return room;
+}
+
 // ─── Code generation ──────────────────────────────────────────────────────────
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
