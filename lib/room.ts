@@ -91,6 +91,11 @@ export async function startRoom(code: string, opts: StartRoomOptions): Promise<R
   room.currentRound = 1;
 
   await saveRoom(room);
+
+  // Clear any vote data left over from a previous game in this room.
+  const redis = getRedis();
+  await redis.del(`votes:${code}`, `vote_count:${code}`);
+
   return room;
 }
 
@@ -114,6 +119,11 @@ export async function resetRoom(code: string): Promise<Room | null> {
   // Config (totalRounds, turnDuration, category) and players are preserved.
 
   await saveRoom(room);
+
+  // Clear atomic vote keys for the finished game.
+  const redis = getRedis();
+  await redis.del(`votes:${code}`, `vote_count:${code}`);
+
   return room;
 }
 
