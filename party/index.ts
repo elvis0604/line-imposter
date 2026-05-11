@@ -35,8 +35,14 @@ interface GameState {
   totalRounds: number;
   /** Drawing turn duration in ms (configured by host). */
   turnDuration: number;
-  /** Epoch ms when the current turn expires. 0 = turn not yet started. */
+  /** classic = timer always counts; draw = timer only ticks while pen is down. */
+  timerMode: 'classic' | 'draw';
+  /** Epoch ms when the current turn expires. 0 = timer not yet started (drawer hasn't drawn). */
   turnEndTime: number;
+  /** True while the drawer's pen is down and the timer is counting. */
+  drawingActive: boolean;
+  /** Remaining ms when the timer is paused (pen is up). Starts as turnDuration. */
+  remainingMs: number;
 }
 
 const STORAGE_KEY = 'gameState';
@@ -54,7 +60,10 @@ const EMPTY_STATE: GameState = {
   currentRound: 1,
   totalRounds: 3,
   turnDuration: DEFAULT_TURN_DURATION_MS,
+  timerMode: 'classic' as const,
   turnEndTime: 0,
+  drawingActive: false,
+  remainingMs: DEFAULT_TURN_DURATION_MS,
 };
 
 interface ConnectionState {
@@ -204,11 +213,26 @@ export default class GameRoom implements Party.Server {
 
     this.state.inPrepPhase = false;
     this.state.prepDeadline = 0;
-    this.state.turnEndTime = Date.now() + this.state.turnDuration;
-    // Do NOT reset canvasHistory here — the canvas persists across turns.
+    this.state.drawingActive = false;
+    this.state.remainingMs = this.state.turnDuration;
+    this.state.turnEndTime = 0;
     await this.persistState();
 
     const drawerId = this.state.turnOrder[this.state.currentTurnIndex] ?? '';
+
+    if (this.state.timerMode === 'classic' || drawerId.startsWith('dev-bot-')) {
+      // Classic: timer runs from the moment the turn starts (original behaviour).
+      // Dev bots also always use this path since they never send draw events.
+      this.state.drawingActive = true;
+      this.state.turnEndTime = Date.now() + this.state.turnDuration;
+      await this.persistState();
+      const expectedIndex = this.state.currentTurnIndex;
+      this.turnTimer = setTimeout(() => {
+        this.advanceTurn(expectedIndex).catch(console.error);
+      }, this.state.turnDuration);
+    }
+    // draw mode: timer stays paused until the first draw_start message.
+
     this.broadcast({
       type: 'turn_started',
       drawerId,
@@ -218,11 +242,6 @@ export default class GameRoom implements Party.Server {
       turnDuration: this.state.turnDuration,
       timeLeft: this.state.turnDuration,
     });
-
-    const expectedIndex = this.state.currentTurnIndex;
-    this.turnTimer = setTimeout(() => {
-      this.advanceTurn(expectedIndex).catch(console.error);
-    }, this.state.turnDuration);
   }
 
   private async advanceTurn(expectedIndex?: number) {
@@ -342,7 +361,10 @@ export default class GameRoom implements Party.Server {
         if (this.canvasHistory.length > 0) {
           this.send(connection, { type: 'canvas_history', events: this.canvasHistory });
         }
-        const timeLeft = Math.max(0, this.state.turnEndTime - Date.now());
+        // If drawing hasn't started yet the full duration is the correct timeLeft.
+        const timeLeft = this.state.drawingActive
+          ? Math.max(0, this.state.turnEndTime - Date.now())
+          : this.state.remainingMs;
         this.send(connection, {
           type: 'turn_started',
           drawerId: this.state.turnOrder[this.state.currentTurnIndex] ?? '',
@@ -352,6 +374,15 @@ export default class GameRoom implements Party.Server {
           turnDuration: this.state.turnDuration,
           timeLeft,
         });
+        // If the timer is running, tell the reconnecting client to start counting.
+        if (this.state.drawingActive && this.state.turnEndTime > 0) {
+          this.send(connection, {
+            type: 'timer_update',
+            turnEndTime: this.state.turnEndTime,
+            remainingMs: this.state.remainingMs,
+            paused: false,
+          });
+        }
       }
     }
 
@@ -382,6 +413,49 @@ export default class GameRoom implements Party.Server {
       const event: BroadcastedDrawEvent = { ...msg.event, drawerId };
       if (this.canvasHistory.length < 5000) this.canvasHistory.push(event);
       this.broadcast({ type: 'draw', event }, sender.id);
+      return;
+    }
+
+    if (msg.type === 'draw_start' || msg.type === 'draw_pause') {
+      await this.ensureState();
+      if (this.state.timerMode !== 'draw') return; // only applies in draw mode
+      const cs = sender.state as ConnectionState | null;
+      const senderId = cs?.playerId ?? sender.id;
+      const currentDrawer = this.state.turnOrder[this.state.currentTurnIndex];
+      if (senderId !== currentDrawer || !this.state.gameStarted || this.state.inPrepPhase) return;
+
+      if (msg.type === 'draw_start' && !this.state.drawingActive) {
+        // Resume: arm the timer with however many ms are left.
+        this.state.drawingActive = true;
+        this.state.turnEndTime = Date.now() + this.state.remainingMs;
+        const expectedIndex = this.state.currentTurnIndex;
+        this.turnTimer = setTimeout(() => {
+          this.advanceTurn(expectedIndex).catch(console.error);
+        }, this.state.remainingMs);
+        this.broadcast({
+          type: 'timer_update',
+          turnEndTime: this.state.turnEndTime,
+          remainingMs: this.state.remainingMs,
+          paused: false,
+        });
+        await this.persistState();
+      }
+
+      if (msg.type === 'draw_pause' && this.state.drawingActive) {
+        // Pause: snapshot remaining time and stop the timer.
+        this.state.remainingMs = Math.max(0, this.state.turnEndTime - Date.now());
+        this.state.drawingActive = false;
+        this.state.turnEndTime = 0;
+        if (this.turnTimer) clearTimeout(this.turnTimer);
+        this.turnTimer = null;
+        this.broadcast({
+          type: 'timer_update',
+          turnEndTime: 0,
+          remainingMs: this.state.remainingMs,
+          paused: true,
+        });
+        await this.persistState();
+      }
       return;
     }
 
@@ -462,6 +536,7 @@ export default class GameRoom implements Party.Server {
       turnOrder?: string[];
       totalRounds?: number;
       turnDuration?: number;
+      timerMode?: 'classic' | 'draw';
       votedCount?: number;
       totalPlayers?: number;
       results?: VotingResults;
@@ -480,9 +555,12 @@ export default class GameRoom implements Party.Server {
         turnOrder: body.turnOrder ?? [],
         totalRounds: body.totalRounds ?? 3,
         turnDuration: body.turnDuration ?? DEFAULT_TURN_DURATION_MS,
+        timerMode: body.timerMode === 'draw' ? 'draw' : 'classic',
         currentTurnIndex: 0,
         currentRound: 1,
         turnEndTime: 0,
+        drawingActive: false,
+        remainingMs: body.turnDuration ?? DEFAULT_TURN_DURATION_MS,
       };
       this.stateLoaded = true;
       this.canvasHistory = [];

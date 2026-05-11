@@ -41,6 +41,7 @@ export async function POST() {
     imposterId: 'dev-bot-1',
     totalRounds: 3,
     turnDuration: 5_000,
+    timerMode: 'classic',
     category: null,
   });
 
@@ -55,6 +56,7 @@ export async function POST() {
         turnOrder: started?.turnOrder ?? [],
         totalRounds: 3,
         turnDuration: 5_000,
+        timerMode: 'classic',
       }),
     });
   } catch {

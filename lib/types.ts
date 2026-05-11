@@ -15,6 +15,7 @@ export interface Room {
   // Game config (set by host before starting, preserved across rematches):
   totalRounds: number;
   turnDuration: number;     // ms per drawing turn
+  timerMode: 'classic' | 'draw'; // classic = always counting; draw = pauses when pen is up
   category: string | null;  // null = random from all categories
   // Phase 3+ (present from creation but unused until Phase 3):
   word: string | null;
@@ -88,6 +89,8 @@ export type ServerMessage =
       turnDuration: number; // ms — full turn length
       timeLeft: number;     // ms remaining (< turnDuration on reconnect)
     }
+  | { type: 'timer_started'; turnEndTime: number } // fired when drawer makes their first stroke
+  | { type: 'timer_update'; turnEndTime: number; remainingMs: number; paused: boolean }
   | { type: 'game_over' }
   | { type: 'game_reset' }
   | { type: 'vote_cast'; votedCount: number; totalPlayers: number }
@@ -97,6 +100,8 @@ export type ServerMessage =
 export type ClientMessage =
   | { type: 'ping' }
   | { type: 'draw'; event: DrawEvent }
+  | { type: 'draw_start' }   // pen down — resume timer
+  | { type: 'draw_pause' }   // pen up   — pause timer
   | { type: 'skip_turn' }
   | { type: 'player_ready' }
   | { type: 'reveal_acknowledged' };

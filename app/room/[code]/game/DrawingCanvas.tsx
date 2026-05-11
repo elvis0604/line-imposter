@@ -33,6 +33,10 @@ export interface DrawingCanvasProps {
   tool: 'pen' | 'eraser';
   /** Called whenever the local user draws a segment. */
   onDraw: (event: DrawEvent) => void;
+  /** Called when the pen touches down (timer should resume). */
+  onDrawStart?: () => void;
+  /** Called when the pen lifts (timer should pause). */
+  onDrawStop?: () => void;
 }
 
 /** Render a single stroke segment onto the 2D context. */
@@ -50,7 +54,7 @@ function renderStroke(ctx: CanvasRenderingContext2D, event: DrawEvent) {
 }
 
 const DrawingCanvas = forwardRef<DrawingCanvasHandle, DrawingCanvasProps>(
-  function DrawingCanvas({ isDrawingAllowed, color, lineWidth, tool, onDraw }, ref) {
+  function DrawingCanvas({ isDrawingAllowed, color, lineWidth, tool, onDraw, onDrawStart, onDrawStop }, ref) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const isDrawing = useRef(false);
     const lastPos = useRef<{ x: number; y: number } | null>(null);
@@ -116,19 +120,21 @@ const DrawingCanvas = forwardRef<DrawingCanvasHandle, DrawingCanvasProps>(
         e.currentTarget.setPointerCapture(e.pointerId);
         isDrawing.current = true;
         lastPos.current = getNormalizedPos(e);
+        onDrawStart?.();
       },
-      [isDrawingAllowed, getNormalizedPos],
+      [isDrawingAllowed, getNormalizedPos, onDrawStart],
     );
 
     // Cancel any in-progress stroke the moment it's no longer our turn.
     // Without this, isDrawing.current stays true across a turn transition and
     // the next pointerMove (while still held) would still draw.
     useEffect(() => {
-      if (!isDrawingAllowed) {
+      if (!isDrawingAllowed && isDrawing.current) {
         isDrawing.current = false;
         lastPos.current = null;
+        onDrawStop?.();
       }
-    }, [isDrawingAllowed]);
+    }, [isDrawingAllowed, onDrawStop]);
 
     const handlePointerMove = useCallback(
       (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -162,8 +168,9 @@ const DrawingCanvas = forwardRef<DrawingCanvasHandle, DrawingCanvasProps>(
         isDrawing.current = false;
         lastPos.current = null;
         e.currentTarget.releasePointerCapture(e.pointerId);
+        onDrawStop?.();
       },
-      [],
+      [onDrawStop],
     );
 
     return (

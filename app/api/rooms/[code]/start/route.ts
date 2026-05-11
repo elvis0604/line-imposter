@@ -1,5 +1,5 @@
 import { cookies } from 'next/headers';
-import { getRoom, startRoom, DEFAULT_TOTAL_ROUNDS, DEFAULT_TURN_DURATION } from '@/lib/room';
+import { getRoom, startRoom, DEFAULT_TOTAL_ROUNDS, DEFAULT_TURN_DURATION, DEFAULT_TIMER_MODE } from '@/lib/room';
 import { PLAYER_ID_COOKIE } from '@/lib/identity';
 import { pickRandomWord } from '@/lib/words';
 
@@ -31,11 +31,13 @@ export async function POST(req: Request, ctx: RouteContext<'/api/rooms/[code]/st
   const body = await req.json().catch(() => ({})) as {
     totalRounds?: number;
     turnDuration?: number;
+    timerMode?: 'classic' | 'draw';
     category?: string | null;
   };
 
   const totalRounds = Math.min(10, Math.max(1, body.totalRounds ?? room.totalRounds ?? DEFAULT_TOTAL_ROUNDS));
   const turnDuration = Math.min(10_000, Math.max(3_000, body.turnDuration ?? room.turnDuration ?? DEFAULT_TURN_DURATION));
+  const timerMode: 'classic' | 'draw' = body.timerMode === 'draw' ? 'draw' : (room.timerMode ?? DEFAULT_TIMER_MODE);
   const category = body.category ?? room.category ?? null;
 
   // Pick word (respecting chosen category) and randomly select imposter.
@@ -43,7 +45,7 @@ export async function POST(req: Request, ctx: RouteContext<'/api/rooms/[code]/st
   const imposterIndex = Math.floor(Math.random() * room.players.length);
   const imposterId = room.players[imposterIndex].id;
 
-  const updatedRoom = await startRoom(code, { word, imposterId, totalRounds, turnDuration, category });
+  const updatedRoom = await startRoom(code, { word, imposterId, totalRounds, turnDuration, timerMode, category });
 
   // Ping PartyKit so it stores turn state and broadcasts game_started + turn_started.
   const protocol = process.env.NODE_ENV === 'development' ? 'http' : 'https';
@@ -58,6 +60,7 @@ export async function POST(req: Request, ctx: RouteContext<'/api/rooms/[code]/st
         turnOrder: updatedRoom?.turnOrder ?? [],
         totalRounds,
         turnDuration,
+        timerMode,
       }),
     });
   } catch {

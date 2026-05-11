@@ -63,6 +63,7 @@ function shuffle<T>(arr: T[]): T[] {
 
 export const DEFAULT_TOTAL_ROUNDS = 3;
 export const DEFAULT_TURN_DURATION = 5_000; // ms
+export const DEFAULT_TIMER_MODE: 'classic' | 'draw' = 'classic';
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
@@ -72,6 +73,7 @@ export interface StartRoomOptions {
   /** Config values to persist on the room (from host's lobby settings). */
   totalRounds: number;
   turnDuration: number;
+  timerMode: 'classic' | 'draw';
   category: string | null;
 }
 
@@ -85,6 +87,7 @@ export async function startRoom(code: string, opts: StartRoomOptions): Promise<R
   room.imposterId = opts.imposterId;
   room.totalRounds = opts.totalRounds;
   room.turnDuration = opts.turnDuration;
+  room.timerMode = opts.timerMode;
   room.category = opts.category;
   room.turnOrder = shuffle(room.players.map((p) => p.id));
   room.currentTurnIndex = 0;
@@ -116,7 +119,7 @@ export async function resetRoom(code: string): Promise<Room | null> {
   room.currentTurnIndex = 0;
   room.currentRound = 0;
   room.votes = {};
-  // Config (totalRounds, turnDuration, category) and players are preserved.
+  // Config (totalRounds, turnDuration, timerMode, category) and players are preserved.
 
   await saveRoom(room);
 
@@ -138,6 +141,7 @@ export function createRoomObject(code: string, host: Player): Room {
     // Config defaults — host can change these in the lobby before starting:
     totalRounds: DEFAULT_TOTAL_ROUNDS,
     turnDuration: DEFAULT_TURN_DURATION,
+    timerMode: DEFAULT_TIMER_MODE,
     category: null,
     word: null,
     imposterId: null,

@@ -97,6 +97,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
     turnDuration: room.turnDuration ?? 60_000,
   });
   const [timeLeftMs, setTimeLeftMs] = useState(0);
+  const [timerPaused, setTimerPaused] = useState(true);
   const turnEndTimeRef = useRef(0);
   const rafRef = useRef<number>(0);
 
@@ -239,6 +240,8 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
         case 'turn_prep': {
           const { drawerId, turnIndex, round, totalRounds } = msg;
           setTurnState((prev) => ({ ...prev, drawerId, turnIndex, round, totalRounds }));
+          setTimerPaused(true);
+          if (rafRef.current) cancelAnimationFrame(rafRef.current);
           desiredPhaseRef.current = 'prep';
           // Only update the visible phase once the player has dismissed the reveal screen.
           if (revealDismissedRef.current) setGamePhase('prep');
@@ -248,10 +251,34 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
         case 'turn_started': {
           const { drawerId, turnIndex, round, totalRounds, turnDuration, timeLeft } = msg;
           setTurnState({ drawerId, turnIndex, round, totalRounds, turnDuration });
-          startCountdown(Date.now() + timeLeft);
+          if (room.timerMode === 'classic') {
+            // Classic: countdown starts immediately when the turn starts.
+            setTimerPaused(false);
+            startCountdown(Date.now() + timeLeft);
+          } else {
+            // Draw mode: timer starts paused, waits for timer_update from server.
+            setTimerPaused(true);
+            if (rafRef.current) cancelAnimationFrame(rafRef.current);
+            setTimeLeftMs(timeLeft);
+          }
           desiredPhaseRef.current = 'playing';
-          // Only update the visible phase once the player has dismissed the reveal screen.
           if (revealDismissedRef.current) setGamePhase('playing');
+          break;
+        }
+
+        case 'timer_started':
+          // Legacy — ignore (superseded by timer_update).
+          break;
+
+        case 'timer_update': {
+          if (msg.paused) {
+            setTimerPaused(true);
+            if (rafRef.current) cancelAnimationFrame(rafRef.current);
+            setTimeLeftMs(msg.remainingMs);
+          } else {
+            setTimerPaused(false);
+            startCountdown(msg.turnEndTime);
+          }
           break;
         }
 
@@ -396,7 +423,9 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
   const isMyTurn = turnState.drawerId === playerId;
   const drawerPlayer = room.players.find((p) => p.id === turnState.drawerId);
   const timerPercent = Math.round((timeLeftMs / turnState.turnDuration) * 100);
-  const timerColor = timeLeftMs > 20_000 ? 'teal' : timeLeftMs > 10_000 ? 'yellow' : 'red';
+  const timerColor = timerPaused ? 'green'
+    : timeLeftMs > 20_00 ? 'yellow'
+    : 'red';
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -661,13 +690,13 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                     </Stack>
                   </Paper>
 
-                   <Group grow wrap="wrap">
+                  <Stack gap="md">
                     <Paper withBorder p="md" radius="md">
                        <Stack gap={4} align="center">
                          <Text size="xs" tt="uppercase" fw={700} c="dimmed">The word was</Text>
                          <Text
                            fw={700}
-                           size="lg"
+                           size="md"
                            ta="center"
                            px="sm"
                            py={4}
@@ -695,7 +724,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                         </Group>
                       </Stack>
                     </Paper>
-                  </Group>
+                  </Stack>
 
                   <Stack gap="xs">
                     <Text fw={600} size="sm">Vote tally</Text>
@@ -828,7 +857,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                     sections={[{ value: timerPercent, color: timerColor }]}
                   />
                   <Text size="sm" fw={700} c={timerColor} ff="monospace">
-                    {formatTime(timeLeftMs)}
+                    {formatTime(timeLeftMs)}{room.timerMode === 'draw' && timerPaused}
                   </Text>
                 </Group>
               </Group>
@@ -865,14 +894,16 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                     background: '#fff',
                   }}
                 >
-                  <DrawingCanvas
-                    ref={canvasRef}
-                    isDrawingAllowed={isMyTurn}
-                    color={color}
-                    lineWidth={lineWidth}
-                    tool={tool}
-                    onDraw={handleDraw}
-                  />
+                   <DrawingCanvas
+                     ref={canvasRef}
+                     isDrawingAllowed={isMyTurn}
+                     color={color}
+                     lineWidth={lineWidth}
+                     tool={tool}
+                     onDraw={handleDraw}
+                     onDrawStart={isMyTurn && room.timerMode === 'draw' ? () => socketRef.current?.send(JSON.stringify({ type: 'draw_start' })) : undefined}
+                     onDrawStop={isMyTurn && room.timerMode === 'draw' ? () => socketRef.current?.send(JSON.stringify({ type: 'draw_pause' })) : undefined}
+                   />
                 </Box>
 
                 {/* Turn order */}

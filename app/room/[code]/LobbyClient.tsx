@@ -18,10 +18,11 @@ import {
   Loader,
   Center,
   NumberInput,
+  Switch,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import type { Player, Room, ServerMessage } from '@/lib/types';
-import { DEFAULT_TOTAL_ROUNDS, DEFAULT_TURN_DURATION } from '@/lib/room';
+import { DEFAULT_TOTAL_ROUNDS, DEFAULT_TURN_DURATION, DEFAULT_TIMER_MODE } from '@/lib/room';
 
 interface Props {
   initialRoom: Room;
@@ -77,6 +78,9 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
   const [turnDuration, setTurnDuration] = useState<number>(
     Math.round((initialRoom.turnDuration ?? DEFAULT_TURN_DURATION) / 1000),
   );
+  const [timerMode, setTimerMode] = useState<'classic' | 'draw'>(
+    initialRoom.timerMode ?? DEFAULT_TIMER_MODE,
+  );
 
   async function handleStart() {
     setStarting(true);
@@ -87,6 +91,7 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
         body: JSON.stringify({
           totalRounds,
           turnDuration: turnDuration * 1000,
+          timerMode,
         }),
       });
       if (!res.ok) {
@@ -311,6 +316,12 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
               max={10}
               value={turnDuration}
               onChange={(v) => setTurnDuration(Number(v) || Math.round(DEFAULT_TURN_DURATION / 1000))}
+            />
+
+            <Switch
+              label="Pause timer when not drawing"
+              checked={timerMode === 'draw'}
+              onChange={(e) => setTimerMode(e.currentTarget.checked ? 'draw' : 'classic')}
             />
           </Stack>
 
