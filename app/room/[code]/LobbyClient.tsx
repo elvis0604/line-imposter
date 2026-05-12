@@ -260,7 +260,7 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
                     size="xs"
                     onClick={copy}
                   >
-                    {copied ? 'Copied' : 'Copy code'}
+                    {copied ? 'Copied' : 'Copy'}
                   </Button>
                 </Tooltip>
               )}
