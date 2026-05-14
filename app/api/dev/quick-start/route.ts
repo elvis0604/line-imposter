@@ -42,6 +42,7 @@ export async function POST() {
     totalRounds: 3,
     turnDuration: 5_000,
     timerMode: 'classic',
+    imposterGuess: false,
     category: null,
   });
 
@@ -57,6 +58,7 @@ export async function POST() {
         totalRounds: 3,
         turnDuration: 5_000,
         timerMode: 'classic',
+        imposterGuess: false,
       }),
     });
   } catch {

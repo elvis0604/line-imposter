@@ -16,6 +16,7 @@ export interface Room {
   totalRounds: number;
   turnDuration: number;     // ms per drawing turn
   timerMode: 'classic' | 'draw'; // classic = always counting; draw = pauses when pen is up
+  imposterGuess: boolean;   // whether the imposter gets a chance to guess the word at the end
   category: string | null;  // null = random from all categories
   // Phase 3+ (present from creation but unused until Phase 3):
   word: string | null;
@@ -58,6 +59,11 @@ export interface VotingResults {
    * AND that player is the imposter. Ties go to the imposter.
    */
   artistsWin: boolean;
+  /**
+   * Set when the imposter won by correctly guessing the word (voting was skipped).
+   * Contains the exact guess string they submitted.
+   */
+  guessedWord?: string;
 }
 
 // ─── PartyKit message protocol ────────────────────────────────────────────────
@@ -66,6 +72,7 @@ export interface VotingResults {
 export type ServerMessage =
   | { type: 'player_joined'; player: Player }
   | { type: 'player_left'; playerId: string }
+  | { type: 'lobby_sync'; players: Player[] }
   | { type: 'player_kicked'; playerId: string }
   | { type: 'game_started' }
   | { type: 'reveal_progress'; readyCount: number; totalPlayers: number; deadline: number }
@@ -91,6 +98,7 @@ export type ServerMessage =
     }
   | { type: 'timer_started'; turnEndTime: number } // fired when drawer makes their first stroke
   | { type: 'timer_update'; turnEndTime: number; remainingMs: number; paused: boolean }
+  | { type: 'imposter_guess_phase'; deadline: number }
   | { type: 'game_over' }
   | { type: 'game_reset' }
   | { type: 'vote_cast'; votedCount: number; totalPlayers: number }

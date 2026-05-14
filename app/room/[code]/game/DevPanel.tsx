@@ -9,7 +9,7 @@ import { useState } from 'react';
 import { ActionIcon, Badge, Box, Button, Group, Stack, Text } from '@mantine/core';
 import type { Room, VotingResults } from '@/lib/types';
 
-type GamePhase = 'reveal' | 'prep' | 'playing' | 'voting' | 'results';
+type GamePhase = 'reveal' | 'prep' | 'playing' | 'guessing' | 'voting' | 'results';
 
 interface DevPanelProps {
   currentPhase: GamePhase;
@@ -27,6 +27,7 @@ const PHASES: { value: GamePhase; label: string }[] = [
   { value: 'reveal', label: 'Reveal' },
   { value: 'prep', label: 'Prep' },
   { value: 'playing', label: 'Drawing' },
+  { value: 'guessing', label: 'Guessing' },
   { value: 'voting', label: 'Voting' },
   { value: 'results', label: 'Results' },
 ];

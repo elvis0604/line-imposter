@@ -112,11 +112,18 @@ export async function POST(req: Request, ctx: RouteContext<'/api/rooms/[code]/vo
     room.status = 'results';
     await saveRoom(room);
 
+    // If the imposter was correctly identified AND the room has the guess
+    // feature enabled, give the imposter a last-chance guess instead of
+    // immediately broadcasting the final results.
+    const pingAction = artistsWin && room.imposterGuess
+      ? 'start_guess_phase'
+      : 'voting_complete';
+
     try {
       await fetch(partyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'voting_complete', results }),
+        body: JSON.stringify({ action: pingAction, results }),
       });
     } catch {
       console.warn('[vote] could not reach PartyKit:', partyUrl);

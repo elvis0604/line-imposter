@@ -22,7 +22,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import type { Player, Room, ServerMessage } from '@/lib/types';
-import { DEFAULT_TOTAL_ROUNDS, DEFAULT_TURN_DURATION, DEFAULT_TIMER_MODE } from '@/lib/room';
+import { DEFAULT_TOTAL_ROUNDS, DEFAULT_TURN_DURATION, DEFAULT_TIMER_MODE, DEFAULT_IMPOSTER_GUESS } from '@/lib/room';
 
 interface Props {
   initialRoom: Room;
@@ -63,6 +63,7 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
   const [room, setRoom] = useState<Room>(initialRoom);
   const [connected, setConnected] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [lobbySynced, setLobbySynced] = useState(false);
   const connectedRef = useRef(true);
   const overlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -81,6 +82,9 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
   const [timerMode, setTimerMode] = useState<'classic' | 'draw'>(
     initialRoom.timerMode ?? DEFAULT_TIMER_MODE,
   );
+  const [imposterGuess, setImposterGuess] = useState<boolean>(
+    initialRoom.imposterGuess ?? DEFAULT_IMPOSTER_GUESS,
+  );
 
   async function handleStart() {
     setStarting(true);
@@ -92,6 +96,7 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
           totalRounds,
           turnDuration: turnDuration * 1000,
           timerMode,
+          imposterGuess,
         }),
       });
       if (!res.ok) {
@@ -128,6 +133,11 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
           message: `${msg.player.name} joined`,
           autoClose: 2000,
         });
+        break;
+
+      case 'lobby_sync':
+        setRoom((r) => ({ ...r, players: msg.players }));
+        setLobbySynced(true);
         break;
 
       case 'player_left':
@@ -276,20 +286,26 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
         <Group justify="space-between">
           <Text fw={600}>Players</Text>
           <Badge variant="light" color="violet">
-            {room.players.length}
+            {lobbySynced ? room.players.length : '…'}
           </Badge>
         </Group>
 
-        {room.players.map((player) => (
-          <PlayerRow
-            key={player.id}
-            player={player}
-            isHost={room.hostId === player.id}
-            isMe={player.id === playerId}
-            canKick={isHost && room.hostId !== player.id}
-            onKick={() => handleKick(player.id)}
-          />
-        ))}
+        {lobbySynced ? (
+          room.players.map((player) => (
+            <PlayerRow
+              key={player.id}
+              player={player}
+              isHost={room.hostId === player.id}
+              isMe={player.id === playerId}
+              canKick={isHost && room.hostId !== player.id}
+              onKick={() => handleKick(player.id)}
+            />
+          ))
+        ) : (
+          <Center py="sm">
+            <Loader size="sm" color="violet" />
+          </Center>
+        )}
       </Stack>
 
       <Divider />
@@ -297,32 +313,38 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
       {/* Game config (host only) */}
       {isHost && (
         <>
-          <Stack gap="sm">
+          <Stack gap="xs">
             <Text fw={600} size="sm">Game settings</Text>
 
-            <NumberInput
-              label="Rounds"
-              description="Number of rounds per game"
-              min={1}
-              max={10}
-              value={totalRounds}
-              onChange={(v) => setTotalRounds(Number(v) || DEFAULT_TOTAL_ROUNDS)}
-            />
+            <Group grow align="flex-start">
+              <NumberInput
+                label="Rounds"
+                min={1}
+                max={10}
+                value={totalRounds}
+                onChange={(v) => setTotalRounds(Number(v) || DEFAULT_TOTAL_ROUNDS)}
+              />
+              <NumberInput
+                label="Turn duration (s)"
+                min={3}
+                max={10}
+                value={turnDuration}
+                onChange={(v) => setTurnDuration(Number(v) || Math.round(DEFAULT_TURN_DURATION / 1000))}
+              />
+            </Group>
 
-            <NumberInput
-              label="Turn duration (seconds)"
-              description="How long each player has to draw"
-              min={3}
-              max={10}
-              value={turnDuration}
-              onChange={(v) => setTurnDuration(Number(v) || Math.round(DEFAULT_TURN_DURATION / 1000))}
-            />
-
-            <Switch
-              label="Pause timer when not drawing"
-              checked={timerMode === 'draw'}
-              onChange={(e) => setTimerMode(e.currentTarget.checked ? 'draw' : 'classic')}
-            />
+            <Group grow>
+              <Switch
+                label="Pause timer when not drawing"
+                checked={timerMode === 'draw'}
+                onChange={(e) => setTimerMode(e.currentTarget.checked ? 'draw' : 'classic')}
+              />
+              <Switch
+                label="Imposter gets to guess the word"
+                checked={imposterGuess}
+                onChange={(e) => setImposterGuess(e.currentTarget.checked)}
+              />
+            </Group>
           </Stack>
 
           <Divider />

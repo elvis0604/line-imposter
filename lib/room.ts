@@ -64,6 +64,7 @@ function shuffle<T>(arr: T[]): T[] {
 export const DEFAULT_TOTAL_ROUNDS = 3;
 export const DEFAULT_TURN_DURATION = 5_000; // ms
 export const DEFAULT_TIMER_MODE: 'classic' | 'draw' = 'classic';
+export const DEFAULT_IMPOSTER_GUESS = false;
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
@@ -74,6 +75,7 @@ export interface StartRoomOptions {
   totalRounds: number;
   turnDuration: number;
   timerMode: 'classic' | 'draw';
+  imposterGuess: boolean;
   category: string | null;
 }
 
@@ -88,6 +90,7 @@ export async function startRoom(code: string, opts: StartRoomOptions): Promise<R
   room.totalRounds = opts.totalRounds;
   room.turnDuration = opts.turnDuration;
   room.timerMode = opts.timerMode;
+  room.imposterGuess = opts.imposterGuess;
   room.category = opts.category;
   room.turnOrder = shuffle(room.players.map((p) => p.id));
   room.currentTurnIndex = 0;
@@ -142,6 +145,7 @@ export function createRoomObject(code: string, host: Player): Room {
     totalRounds: DEFAULT_TOTAL_ROUNDS,
     turnDuration: DEFAULT_TURN_DURATION,
     timerMode: DEFAULT_TIMER_MODE,
+    imposterGuess: DEFAULT_IMPOSTER_GUESS,
     category: null,
     word: null,
     imposterId: null,

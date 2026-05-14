@@ -6,12 +6,15 @@ import type {
   ServerMessage,
   VotingResults,
 } from '../lib/types';
+import { removePlayerFromRoom } from '../lib/room';
 
 const DEFAULT_TURN_DURATION_MS = 5_000;
 /** Max time to wait for the drawer to click Ready before auto-starting the turn. */
 const MAX_PREP_WAIT_MS = 30_000;
 /** Max time to wait for all players to acknowledge the reveal before auto-starting. */
 const MAX_REVEAL_WAIT_MS = 30_000;
+/** Max time to wait for the imposter to submit their final guess. */
+const MAX_GUESS_WAIT_MS = 30_000;
 
 // ── Persisted game state (written to room.storage on every mutation) ──────────
 
@@ -43,6 +46,13 @@ interface GameState {
   drawingActive: boolean;
   /** Remaining ms when the timer is paused (pen is up). Starts as turnDuration. */
   remainingMs: number;
+  /** True while the imposter is making their final guess (after voting identified them). */
+  inGuessPhase: boolean;
+  /** Epoch ms of the guess phase deadline (auto-advances to results if no guess). */
+  guessDeadline: number;
+  /** The voting results that triggered the guess phase — broadcast as-is if the
+   *  imposter guesses wrong, or modified (artistsWin=false, guessedWord set) if correct. */
+  originalResults?: VotingResults;
 }
 
 const STORAGE_KEY = 'gameState';
@@ -64,6 +74,8 @@ const EMPTY_STATE: GameState = {
   turnEndTime: 0,
   drawingActive: false,
   remainingMs: DEFAULT_TURN_DURATION_MS,
+  inGuessPhase: false,
+  guessDeadline: 0,
 };
 
 interface ConnectionState {
@@ -80,7 +92,11 @@ export default class GameRoom implements Party.Server {
   private turnTimer: ReturnType<typeof setTimeout> | null = null;
   private prepTimer: ReturnType<typeof setTimeout> | null = null;
   private revealTimer: ReturnType<typeof setTimeout> | null = null;
+  private guessTimer: ReturnType<typeof setTimeout> | null = null;
   private canvasHistory: BroadcastedDrawEvent[] = [];
+  /** Pending timers that will remove a disconnected lobby player from Redis.
+   *  Keyed by playerId. Cancelled if the player reconnects within the grace period. */
+  private lobbyDisconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
   constructor(readonly room: Party.Room) {}
 
@@ -271,8 +287,51 @@ export default class GameRoom implements Party.Server {
   }
 
   /**
+   * Enter the imposter-guess phase. Called after voting identifies the imposter
+   * (artistsWin=true) — gives the imposter 30 s to guess the word and reverse the outcome.
+   * `this.state.originalResults` must be set by the caller before invoking this.
+   */
+  private async startGuessPhase() {
+    if (this.guessTimer) clearTimeout(this.guessTimer);
+
+    this.state.inGuessPhase = true;
+    this.state.guessDeadline = Date.now() + MAX_GUESS_WAIT_MS;
+    await this.persistState();
+
+    this.broadcast({ type: 'imposter_guess_phase', deadline: this.state.guessDeadline });
+
+    this.guessTimer = setTimeout(async () => {
+      await this.endGuessPhase();
+    }, MAX_GUESS_WAIT_MS);
+  }
+
+  /**
+   * End the guess phase.
+   * If `guessedWord` is provided the imposter guessed correctly — broadcast
+   * voting_complete with the outcome flipped to imposter wins.
+   * If omitted (timeout or wrong guess) broadcast voting_complete with the
+   * original artistsWin=true results so artists still win.
+   */
+  private async endGuessPhase(guessedWord?: string) {
+    if (this.guessTimer) clearTimeout(this.guessTimer);
+    this.guessTimer = null;
+
+    this.state.inGuessPhase = false;
+    await this.persistState();
+
+    const originalResults = this.state.originalResults;
+    if (!originalResults) return;
+
+    if (guessedWord !== undefined) {
+      const results: VotingResults = { ...originalResults, artistsWin: false, guessedWord };
+      this.broadcast({ type: 'voting_complete', results });
+    } else {
+      this.broadcast({ type: 'voting_complete', results: originalResults });
+    }
+  }
+
+  /**
    * Restart whichever timer is appropriate after a hot-reload / server restart.
-   * Called once per onConnect when the in-memory timers are gone.
    *
    * IMPORTANT: always go through setTimeout (even with delay 0) rather than
    * calling advanceTurn/startTurn directly. This ensures this.turnTimer /
@@ -281,6 +340,14 @@ export default class GameRoom implements Party.Server {
    * we never double-advance the turn index.
    */
   private restartTimersAfterRestore() {
+    if (this.state.inGuessPhase) {
+      if (this.guessTimer) return;
+      const remaining = Math.max(0, this.state.guessDeadline - Date.now());
+      this.guessTimer = setTimeout(async () => {
+        await this.endGuessPhase();
+      }, remaining);
+      return;
+    }
     if (this.state.inRevealPhase) {
       if (this.revealTimer) return;
       const remaining = Math.max(0, this.state.revealDeadline - Date.now());
@@ -321,14 +388,63 @@ export default class GameRoom implements Party.Server {
     // Restore persisted state if in-memory state is blank (after hot-reload).
     await this.ensureState();
 
-    if (this.state.gameOver) {
+    if (this.state.inGuessPhase) {
+      // Imposter guess phase — reconnecting player gets the deadline so the
+      // countdown and UI are immediately in sync.
+      this.restartTimersAfterRestore();
+      this.send(connection, {
+        type: 'imposter_guess_phase',
+        deadline: this.state.guessDeadline,
+      });
+    } else if (this.state.gameOver) {
       // All rounds complete — player is reconnecting during voting/results.
       // Send game_over so the client transitions out of the reveal screen.
       this.send(connection, { type: 'game_over' });
     } else if (!this.state.gameStarted) {
-      // Lobby: announce presence
-      const player: Player = { id: playerId, name: playerName };
-      this.broadcast({ type: 'player_joined', player }, connection.id);
+      // Lobby: announce presence, but only if this is a genuinely new connection.
+      // If a pending disconnect timer exists the player is reconnecting after a
+      // brief drop — cancel the timer (Redis stays intact) and skip the
+      // player_joined broadcast so no spurious chime/toast fires for others.
+      const pendingTimer = this.lobbyDisconnectTimers.get(playerId);
+      // Check if this player already has an older connection still open
+      // (e.g. their game WS hasn't closed yet but the new lobby WS just opened).
+      // In that case suppress player_joined — onClose will also skip player_left
+      // once the old WS eventually closes.
+      let alreadyConnected = false;
+      for (const conn of this.room.getConnections()) {
+        if (conn.id !== connection.id) {
+          const otherCs = conn.state as ConnectionState | null;
+          if (otherCs?.playerId === playerId) {
+            alreadyConnected = true;
+            break;
+          }
+        }
+      }
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        this.lobbyDisconnectTimers.delete(playerId);
+      } else if (!alreadyConnected) {
+        const player: Player = { id: playerId, name: playerName };
+        this.broadcast({ type: 'player_joined', player }, connection.id);
+      }
+      // Build the authoritative player list from live connections and broadcast
+      // to ALL clients (not just the connecting one). This is critical after a
+      // game_reset: every reconnecting player skips player_joined (reconnect
+      // path above), so without a broadcast here the host would never learn
+      // about non-hosts who reconnect after themselves.
+      // Deduplicate by playerId in case old and new WS connections briefly overlap.
+      const seenIds = new Set<string>();
+      const syncPlayers: Player[] = [];
+      for (const conn of this.room.getConnections()) {
+        const cs = conn.state as ConnectionState | null;
+        if (cs?.playerId && !seenIds.has(cs.playerId)) {
+          seenIds.add(cs.playerId);
+          syncPlayers.push({ id: cs.playerId, name: cs.playerName });
+        }
+      }
+      this.room.broadcast(
+        JSON.stringify({ type: 'lobby_sync', players: syncPlayers } satisfies ServerMessage),
+      );
     } else {
       // Game in progress: restart whichever timer was lost, then send catch-up.
       this.restartTimersAfterRestore();
@@ -512,9 +628,41 @@ export default class GameRoom implements Party.Server {
   async onClose(connection: Party.Connection) {
     const cs = connection.state as ConnectionState | null;
     if (!cs) return;
-    if (!this.state.gameStarted) {
-      this.broadcast({ type: 'player_left', playerId: cs.playerId });
+
+    // Ensure state is loaded — onClose can fire after a hot-reload where the
+    // in-memory state is blank, causing incorrect gameStarted=false reads.
+    await this.ensureState();
+
+    if (!this.state.gameStarted && !this.state.inGuessPhase) {
+      const playerId = cs.playerId;
+      const existing = this.lobbyDisconnectTimers.get(playerId);
+      if (existing) clearTimeout(existing);
+
+      // Defer the departure notification so that a page-refresh (or any brief
+      // reconnect) has time to open a new WebSocket and cancel this timer
+      // before player_left is ever sent. Broadcasting player_left immediately
+      // and then correcting with lobby_sync creates an unavoidable race where
+      // the correction arrives before the removal, leaving the player
+      // permanently invisible on some clients.
+      const timer = setTimeout(async () => {
+        this.lobbyDisconnectTimers.delete(playerId);
+        // Skip if the player already reconnected on a new WebSocket.
+        let stillConnected = false;
+        for (const conn of this.room.getConnections()) {
+          const connState = conn.state as ConnectionState | null;
+          if (connState?.playerId === playerId) {
+            stillConnected = true;
+            break;
+          }
+        }
+        if (!stillConnected) {
+          this.broadcast({ type: 'player_left', playerId });
+          await removePlayerFromRoom(this.room.id, playerId);
+        }
+      }, 3_000);
+      this.lobbyDisconnectTimers.set(playerId, timer);
     }
+
     // A disconnect during the reveal phase might unblock the remaining
     // connected players (they may all have already acknowledged).
     if (this.state.inRevealPhase) {
@@ -540,6 +688,7 @@ export default class GameRoom implements Party.Server {
       votedCount?: number;
       totalPlayers?: number;
       results?: VotingResults;
+      guessedWord?: string;
       targetPlayerId?: string;
     };
 
@@ -561,6 +710,8 @@ export default class GameRoom implements Party.Server {
         turnEndTime: 0,
         drawingActive: false,
         remainingMs: body.turnDuration ?? DEFAULT_TURN_DURATION_MS,
+        inGuessPhase: false,
+        guessDeadline: 0,
       };
       this.stateLoaded = true;
       this.canvasHistory = [];
@@ -587,14 +738,34 @@ export default class GameRoom implements Party.Server {
       return new Response('ok');
     }
 
+    if (body.action === 'start_guess_phase' && body.results) {
+      // Vote identified the imposter — give them a chance to guess the word.
+      // Guard: only enter guess phase if we're in the gameOver state (just finished voting).
+      if (this.state.gameOver && !this.state.inGuessPhase) {
+        this.state.originalResults = body.results;
+        await this.startGuessPhase();
+      }
+      return new Response('ok');
+    }
+
+    if (body.action === 'guess_result') {
+      // Guard: ignore if the guess phase already ended (e.g. timer fired first).
+      if (this.state.inGuessPhase) {
+        await this.endGuessPhase(body.guessedWord);
+      }
+      return new Response('ok');
+    }
+
     if (body.action === 'game_reset') {
       // Clear all game state so the room is back to lobby.
       if (this.turnTimer) clearTimeout(this.turnTimer);
       if (this.prepTimer) clearTimeout(this.prepTimer);
       if (this.revealTimer) clearTimeout(this.revealTimer);
+      if (this.guessTimer) clearTimeout(this.guessTimer);
       this.turnTimer = null;
       this.prepTimer = null;
       this.revealTimer = null;
+      this.guessTimer = null;
       this.state = { ...EMPTY_STATE };
       this.stateLoaded = true;
       this.canvasHistory = [];

@@ -27,6 +27,7 @@ import {
   Modal,
   Loader,
   Overlay,
+  TextInput,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import type {
@@ -63,7 +64,7 @@ const fadeTrans = { duration: 0.15 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type GamePhase = 'reveal' | 'prep' | 'playing' | 'voting' | 'results';
+type GamePhase = 'reveal' | 'prep' | 'playing' | 'guessing' | 'voting' | 'results';
 
 interface TurnState {
   drawerId: string;
@@ -111,6 +112,13 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
   const [votedCount, setVotedCount] = useState(0);
   const [votingLoading, setVotingLoading] = useState(false);
   const [votingResults, setVotingResults] = useState<VotingResults | null>(null);
+
+  // ── Guess state (imposter-guess phase) ────────────────────────────────────
+  const [guessInput, setGuessInput] = useState('');
+  const [guessSubmitting, setGuessSubmitting] = useState(false);
+  const [guessTimeLeftMs, setGuessTimeLeftMs] = useState(0);
+  const guessDeadlineRef = useRef(0);
+  const guessRafRef = useRef<number>(0);
 
   // ── Reveal-acknowledged state ──────────────────────────────────────────────
   const [revealAcknowledged, setRevealAcknowledged] = useState(false);
@@ -187,6 +195,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
   useEffect(() => () => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     if (revealRafRef.current) cancelAnimationFrame(revealRafRef.current);
+    if (guessRafRef.current) cancelAnimationFrame(guessRafRef.current);
   }, []);
 
   // ── PartySocket message handler ───────────────────────────────────────────
@@ -279,6 +288,20 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
             setTimerPaused(false);
             startCountdown(msg.turnEndTime);
           }
+          break;
+        }
+
+        case 'imposter_guess_phase': {
+          if (rafRef.current) cancelAnimationFrame(rafRef.current);
+          guessDeadlineRef.current = msg.deadline;
+          if (guessRafRef.current) cancelAnimationFrame(guessRafRef.current);
+          const tick = () => {
+            const remaining = Math.max(0, guessDeadlineRef.current - Date.now());
+            setGuessTimeLeftMs(remaining);
+            if (remaining > 0) guessRafRef.current = requestAnimationFrame(tick);
+          };
+          guessRafRef.current = requestAnimationFrame(tick);
+          setGamePhase('guessing');
           break;
         }
 
@@ -403,6 +426,24 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
     [room.code],
   );
 
+  // ── Guess handler (imposter-guess phase) ──────────────────────────────────
+  const handleGuess = useCallback(async () => {
+    const trimmed = guessInput.trim();
+    if (!trimmed) return;
+    setGuessSubmitting(true);
+    try {
+      await fetch(`/api/rooms/${room.code}/guess`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ guess: trimmed }),
+      });
+      // Result comes back via voting_complete (correct) or game_over (wrong) from PartyKit.
+    } catch {
+      notifications.show({ color: 'red', title: 'Error', message: 'Could not reach server' });
+      setGuessSubmitting(false);
+    }
+  }, [guessInput, room.code]);
+
   // ── Play-again handler (host only) ────────────────────────────────────────
   const handlePlayAgain = useCallback(async () => {
     setPlayAgainLoading(true);
@@ -463,8 +504,9 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
             animate="visible"
             exit="hidden"
             transition={fadeTrans}
+            style={{ width: '100%', maxWidth: 560 }}
           >
-            <Stack gap="lg" w="100%" maw={560}>
+            <Stack gap="lg" w="100%">
               <Paper
                 withBorder
                 p="xl"
@@ -572,8 +614,9 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
             animate="visible"
             exit="hidden"
             transition={fadeTrans}
+            style={{ width: '100%', maxWidth: 560 }}
           >
-            <Stack gap="lg" w="100%" maw={560}>
+            <Stack gap="lg" w="100%">
               <Stack align="center" gap={4}>
                 <Title order={2}>Who is the imposter?</Title>
                 <Text c="dimmed" size="sm">Vote for the player you think doesn&apos;t know the word.</Text>
@@ -650,9 +693,10 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
             animate="visible"
             exit="hidden"
             transition={fadeTrans}
+            style={{ width: '100%', maxWidth: 560 }}
           >
             {(() => {
-              const { tally, imposterId, artistsWin } = votingResults;
+              const { tally, imposterId, artistsWin, guessedWord } = votingResults;
               const revealedWord = votingResults.word;
               const imposterPlayer = room.players.find((p) => p.id === imposterId);
               const wasImposter = playerId === imposterId;
@@ -660,14 +704,29 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                 (a, b) => (tally[b.id] ?? 0) - (tally[a.id] ?? 0),
               );
 
+              const outcomeTitle = guessedWord
+                ? 'Imposter wins!'
+                : artistsWin ? 'Artists win!' : 'Imposter wins!';
+              const outcomeColor = (guessedWord || !artistsWin) ? 'red' : 'teal';
+              const outcomeEmoji = (guessedWord || !artistsWin) ? '🎭' : '🎉';
+              const outcomeSubtitle = guessedWord
+                ? wasImposter
+                  ? 'You guessed the word! Brilliant bluff.'
+                  : 'The imposter guessed the word and escaped!'
+                : artistsWin
+                  ? 'The imposter was caught. Good detective work!'
+                  : wasImposter
+                    ? 'You fooled them all. Well played!'
+                    : 'The imposter blended in perfectly.';
+
               return (
-                <Stack gap="lg" w="100%" maw={560}>
+                <Stack gap="lg" w="100%">
                   <Paper
                     withBorder
                     p="xl"
                     radius="md"
                     style={{
-                      borderColor: artistsWin
+                      borderColor: outcomeColor === 'teal'
                         ? 'var(--mantine-color-teal-6)'
                         : 'var(--mantine-color-red-6)',
                       borderWidth: 2,
@@ -675,17 +734,13 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                   >
                     <Stack align="center" gap="sm">
                       <Text size="3rem" style={{ lineHeight: 1 }}>
-                        {artistsWin ? '🎉' : '🎭'}
+                        {outcomeEmoji}
                       </Text>
-                      <Title order={2} c={artistsWin ? 'teal' : 'red'}>
-                        {artistsWin ? 'Artists win!' : 'Imposter wins!'}
+                      <Title order={2} c={outcomeColor}>
+                        {outcomeTitle}
                       </Title>
                       <Text size="sm" c="dimmed" ta="center">
-                        {artistsWin
-                          ? 'The imposter was caught. Good detective work!'
-                          : wasImposter
-                            ? 'You fooled them all. Well played!'
-                            : 'The imposter blended in perfectly.'}
+                        {outcomeSubtitle}
                       </Text>
                     </Stack>
                   </Paper>
@@ -727,42 +782,71 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                   </Stack>
 
                   <Stack gap="xs">
-                    <Text fw={600} size="sm">Vote tally</Text>
-                    {sortedPlayers.map((player) => {
-                      const votes = tally[player.id] ?? 0;
-                      const isImposterPlayer = player.id === imposterId;
-                      return (
-                        <Paper key={player.id} withBorder px="md" py="sm" radius="md">
-                          <Group justify="space-between">
-                            <Group gap="sm">
-                              <Avatar
-                                color={isImposterPlayer ? 'red' : 'violet'}
-                                size="sm"
-                                radius="xl"
-                              >
-                                {avatarLetters(player.name)}
-                              </Avatar>
-                              <Text size="sm" fw={player.id === playerId ? 700 : 400}>
-                                {player.name}
-                                {player.id === playerId && (
-                                  <Text span size="xs" c="dimmed"> (you)</Text>
-                                )}
-                              </Text>
-                              {isImposterPlayer && (
-                                <Badge color="red" variant="light" size="xs">Imposter</Badge>
-                              )}
-                            </Group>
-                            <Badge
-                              color={votes > 0 ? 'violet' : 'gray'}
-                              variant={votes > 0 ? 'filled' : 'light'}
-                              size="sm"
-                            >
-                              {votes} vote{votes !== 1 ? 's' : ''}
-                            </Badge>
-                          </Group>
-                        </Paper>
-                      );
-                    })}
+                    {guessedWord ? (
+                      <Paper withBorder p="md" radius="md">
+                        <Stack gap={4} align="center">
+                          <Text size="xs" tt="uppercase" fw={700} c="dimmed">The imposter&apos;s guess</Text>
+                          <Text
+                            fw={700}
+                            size="md"
+                            ta="center"
+                            px="sm"
+                            py={4}
+                            w="100%"
+                            style={{
+                              background: 'var(--mantine-color-red-light)',
+                              color: 'var(--mantine-color-red-light-color)',
+                              borderRadius: 'var(--mantine-radius-md)',
+                              wordBreak: 'break-word',
+                            }}
+                          >
+                            &ldquo;{guessedWord}&rdquo;
+                          </Text>
+                          <Text size="xs" c="dimmed" ta="center">
+                            The imposter identified the word.
+                          </Text>
+                        </Stack>
+                      </Paper>
+                    ) : (
+                      <>
+                        <Text fw={600} size="sm">Vote tally</Text>
+                        {sortedPlayers.map((player) => {
+                          const votes = tally[player.id] ?? 0;
+                          const isImposterPlayer = player.id === imposterId;
+                          return (
+                            <Paper key={player.id} withBorder px="md" py="sm" radius="md">
+                              <Group justify="space-between">
+                                <Group gap="sm">
+                                  <Avatar
+                                    color={isImposterPlayer ? 'red' : 'violet'}
+                                    size="sm"
+                                    radius="xl"
+                                  >
+                                    {avatarLetters(player.name)}
+                                  </Avatar>
+                                  <Text size="sm" fw={player.id === playerId ? 700 : 400}>
+                                    {player.name}
+                                    {player.id === playerId && (
+                                      <Text span size="xs" c="dimmed"> (you)</Text>
+                                    )}
+                                  </Text>
+                                  {isImposterPlayer && (
+                                    <Badge color="red" variant="light" size="xs">Imposter</Badge>
+                                  )}
+                                </Group>
+                                <Badge
+                                  color={votes > 0 ? 'violet' : 'gray'}
+                                  variant={votes > 0 ? 'filled' : 'light'}
+                                  size="sm"
+                                >
+                                  {votes} vote{votes !== 1 ? 's' : ''}
+                                </Badge>
+                              </Group>
+                            </Paper>
+                          );
+                        })}
+                      </>
+                    )}
                   </Stack>
 
                   <Group>
@@ -790,6 +874,90 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
           </motion.div>
         )}
 
+        {/* ── GUESSING ───────────────────────────────────────────────────── */}
+        {gamePhase === 'guessing' && (
+          <motion.div
+            key="guessing"
+            variants={fade}
+            initial="hidden"
+            animate="visible"
+            exit="hidden"
+            transition={fadeTrans}
+            style={{ width: '100%', maxWidth: 560 }}
+          >
+            <Stack gap="lg" w="100%">
+              <Paper
+                withBorder
+                p="xl"
+                radius="md"
+                style={{
+                  borderColor: 'var(--mantine-color-red-6)',
+                  borderWidth: 2,
+                }}
+              >
+                <Stack align="center" gap="lg">
+                  <ThemeIcon size={64} radius="xl" color="red" variant="light">
+                    <Text size="2rem">🎭</Text>
+                  </ThemeIcon>
+
+                  <Stack align="center" gap={4}>
+                    <Text size="xs" tt="uppercase" fw={700} c="dimmed">Imposter&apos;s last chance</Text>
+                    <Title order={2} c="red">
+                      {isImposter ? 'Guess the word!' : 'The imposter is guessing…'}
+                    </Title>
+                  </Stack>
+
+                  {/* Countdown */}
+                  <Group gap="xs">
+                    <Text size="sm" c="dimmed">Time remaining:</Text>
+                    <Text size="sm" fw={700} ff="monospace" c={guessTimeLeftMs < 10_000 ? 'red' : 'dimmed'}>
+                      {formatTime(guessTimeLeftMs)}
+                    </Text>
+                  </Group>
+
+                  {isImposter ? (
+                    <Stack gap="sm" w="100%">
+                      <Text size="sm" c="dimmed" ta="center">
+                        Study the drawings carefully. What word were the artists drawing?
+                      </Text>
+                      <TextInput
+                        placeholder="Type your guess…"
+                        value={guessInput}
+                        onChange={(e) => setGuessInput(e.currentTarget.value)}
+                        disabled={guessSubmitting}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleGuess();
+                        }}
+                        size="md"
+                      />
+                      <Button
+                        size="md"
+                        color="red"
+                        fullWidth
+                        loading={guessSubmitting}
+                        disabled={!guessInput.trim()}
+                        onClick={handleGuess}
+                      >
+                        Submit guess
+                      </Button>
+                    </Stack>
+                  ) : (
+                    <Stack align="center" gap="sm">
+                      <Text size="sm" c="dimmed" ta="center">
+                        The imposter is studying the canvas and trying to guess the secret word.
+                      </Text>
+                      <Group gap="xs">
+                        <Loader size="xs" color="red" />
+                        <Text size="sm" c="dimmed">Waiting for their guess…</Text>
+                      </Group>
+                    </Stack>
+                  )}
+                </Stack>
+              </Paper>
+            </Stack>
+          </motion.div>
+        )}
+
         {/* ── PLAYING / PREP ─────────────────────────────────────────────── */}
         {(gamePhase === 'playing' || gamePhase === 'prep') && (
           <motion.div
@@ -799,8 +967,9 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
             animate="visible"
             exit="hidden"
             transition={fadeTrans}
+            style={{ width: '100%', maxWidth: 900 }}
           >
-            <Stack gap="sm" w="100%" maw={900}>
+            <Stack gap="sm" w="100%">
               {/* Prep modal */}
               <Modal
                 opened={gamePhase === 'prep'}
