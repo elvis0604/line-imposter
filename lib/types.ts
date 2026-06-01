@@ -25,6 +25,7 @@ export interface Room {
   currentTurnIndex: number;
   currentRound: number;
   votes: Record<string, string>; // voterId → accusedId
+  usedWords: string[];           // words already played in this room session (prevents repeats)
   createdAt: number; // unix ms
 }
 

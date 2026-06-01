@@ -1,5 +1,5 @@
 import { cookies } from 'next/headers';
-import { getRoom, startRoom, DEFAULT_TOTAL_ROUNDS, DEFAULT_TURN_DURATION, DEFAULT_TIMER_MODE, DEFAULT_IMPOSTER_GUESS } from '@/lib/room';
+import { getRoom, startRoom, appendUsedWord, DEFAULT_TOTAL_ROUNDS, DEFAULT_TURN_DURATION, DEFAULT_TIMER_MODE, DEFAULT_IMPOSTER_GUESS } from '@/lib/room';
 import { PLAYER_ID_COOKIE } from '@/lib/identity';
 import { pickRandomWord } from '@/lib/words';
 
@@ -45,12 +45,15 @@ export async function POST(req: Request, ctx: RouteContext<'/api/rooms/[code]/st
   const imposterGuess: boolean = body.imposterGuess ?? room.imposterGuess ?? DEFAULT_IMPOSTER_GUESS;
   const category = body.category ?? room.category ?? null;
 
-  // Pick word (respecting chosen category) and randomly select imposter.
-  const { word } = pickRandomWord(category);
-  const imposterIndex = Math.floor(Math.random() * room.players.length);
-  const imposterId = room.players[imposterIndex].id;
+  // Pick word (respecting chosen category), excluding words already used this session.
+  const { word } = pickRandomWord(category, room.usedWords ?? [])
+  const imposterIndex = Math.floor(Math.random() * room.players.length)
+  const imposterId = room.players[imposterIndex].id
 
-  const updatedRoom = await startRoom(code, { word, imposterId, totalRounds, turnDuration, timerMode, imposterGuess, category });
+  const updatedRoom = await startRoom(code, { word, imposterId, totalRounds, turnDuration, timerMode, imposterGuess, category })
+
+  // Record the word as used so it won't repeat in future play-agains this session.
+  await appendUsedWord(code, word)
 
   // Ping PartyKit so it stores turn state and broadcasts game_started + turn_started.
   const protocol = process.env.NODE_ENV === 'development' ? 'http' : 'https';

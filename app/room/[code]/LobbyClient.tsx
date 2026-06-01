@@ -326,7 +326,7 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
               />
               <NumberInput
                 label="Turn duration (s)"
-                min={3}
+                min={1}
                 max={10}
                 value={turnDuration}
                 onChange={(v) => setTurnDuration(Number(v) || Math.round(DEFAULT_TURN_DURATION / 1000))}

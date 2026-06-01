@@ -109,7 +109,8 @@ export async function startRoom(code: string, opts: StartRoomOptions): Promise<R
 
 /**
  * Reset a room back to lobby state for a rematch.
- * Keeps the player list and config (totalRounds, turnDuration, category).
+ * Keeps the player list, config (totalRounds, turnDuration, category),
+ * and usedWords so the same word isn't repeated across play-agains.
  */
 export async function resetRoom(code: string): Promise<Room | null> {
   const room = await getRoom(code);
@@ -135,6 +136,20 @@ export async function resetRoom(code: string): Promise<Room | null> {
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
+/**
+ * Append a word to the room's usedWords list so it won't be picked again
+ * until the entire category pool is exhausted.
+ */
+export const appendUsedWord = async (code: string, word: string): Promise<void> => {
+  const room = await getRoom(code)
+  if (!room) return
+  if (!room.usedWords) room.usedWords = []
+  if (!room.usedWords.includes(word)) {
+    room.usedWords.push(word)
+    await saveRoom(room)
+  }
+}
+
 export function createRoomObject(code: string, host: Player): Room {
   return {
     code,
@@ -153,6 +168,7 @@ export function createRoomObject(code: string, host: Player): Room {
     currentTurnIndex: 0,
     currentRound: 0,
     votes: {},
+    usedWords: [],
     createdAt: Date.now(),
-  };
+  }
 }
