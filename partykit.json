@@ -3,5 +3,6 @@
   "name": "line-imposter",
   "main": "party/index.ts",
   "port": 1999,
-  "compatibilityDate": "2023-03-13"
+  "compatibilityDate": "2023-03-13",
+  "compatibilityFlags": ["cache_option_enabled"]
 }

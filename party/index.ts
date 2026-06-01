@@ -6,7 +6,7 @@ import type {
   ServerMessage,
   VotingResults,
 } from '../lib/types';
-import { removePlayerFromRoom } from '../lib/room';
+import { addPlayerToRoom, removePlayerFromRoom } from '../lib/room';
 
 const DEFAULT_TURN_DURATION_MS = 5_000;
 /** Max time to wait for the drawer to click Ready before auto-starting the turn. */
@@ -427,6 +427,15 @@ export default class GameRoom implements Party.Server {
         this.lobbyDisconnectTimers.delete(playerId);
       } else if (!alreadyConnected) {
         const player: Player = { id: playerId, name: playerName };
+        // Add to Redis so the player is included when the host starts the game.
+        // addPlayerToRoom is idempotent — safe to call for returning players too.
+        // Wrapped in try/catch so a transient Redis error never crashes onConnect
+        // and prevents lobby_sync from being sent.
+        try {
+          await addPlayerToRoom(this.room.id, player);
+        } catch (err) {
+          console.warn(`[${this.room.id}] addPlayerToRoom failed for ${playerId}:`, err);
+        }
         this.broadcast({ type: 'player_joined', player }, connection.id);
       }
       // Build the authoritative player list from live connections and broadcast
@@ -439,7 +448,7 @@ export default class GameRoom implements Party.Server {
       const syncPlayers: Player[] = [];
       for (const conn of this.room.getConnections()) {
         const cs = conn.state as ConnectionState | null;
-        if (cs?.playerId && !seenIds.has(cs.playerId)) {
+        if (cs?.playerId && !cs.playerId.startsWith('obs-') && !seenIds.has(cs.playerId)) {
           seenIds.add(cs.playerId);
           syncPlayers.push({ id: cs.playerId, name: cs.playerName });
         }
@@ -710,6 +719,24 @@ export default class GameRoom implements Party.Server {
     };
 
     if (body.action === 'game_started') {
+      // Flush any pending lobby-disconnect timers before the game state is
+      // committed. Players who closed their tab during the grace window would
+      // otherwise remain in the turn order even though they're gone.
+      const removedIds = new Set<string>();
+      for (const [pid, timer] of this.lobbyDisconnectTimers.entries()) {
+        clearTimeout(timer);
+        this.lobbyDisconnectTimers.delete(pid);
+        const stillConnected = [...this.room.getConnections()].some(
+          (c) => (c.state as ConnectionState | null)?.playerId === pid,
+        );
+        if (!stillConnected) {
+          removedIds.add(pid);
+          this.broadcast({ type: 'player_left', playerId: pid });
+          await removePlayerFromRoom(this.room.id, pid);
+        }
+      }
+      const cleanTurnOrder = (body.turnOrder ?? []).filter((id) => !removedIds.has(id));
+
       this.state = {
         gameStarted: true,
         gameOver: false,
@@ -718,7 +745,7 @@ export default class GameRoom implements Party.Server {
         revealAcknowledgedIds: [],
         inPrepPhase: false,
         prepDeadline: 0,
-        turnOrder: body.turnOrder ?? [],
+        turnOrder: cleanTurnOrder,
         totalRounds: body.totalRounds ?? 3,
         turnDuration: body.turnDuration ?? DEFAULT_TURN_DURATION_MS,
         timerMode: body.timerMode === 'draw' ? 'draw' : 'classic',

@@ -176,7 +176,10 @@ export default function LobbyClient({ initialRoom, playerId: serverPlayerId }: P
     const pid = serverPlayerId || localStorage.getItem('lc_pid') || '';
     if (!pid) return;
 
-    const playerName = room.players.find((p) => p.id === pid)?.name ?? 'Unknown';
+    const playerName =
+      room.players.find((p) => p.id === pid)?.name ??
+      localStorage.getItem('lc_pname') ??
+      'Unknown';
 
     // Set to true in cleanup before socket.close() so the async 'close' event
     // that fires after the handshake doesn't schedule the disconnect notification
