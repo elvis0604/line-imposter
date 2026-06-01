@@ -83,9 +83,10 @@ interface Props {
   isImposter: boolean;
   isHost: boolean;
   playerId: string;
+  isObserver?: boolean;
 }
 
-export default function GameClient({ room, word, isImposter, isHost, playerId }: Props) {
+export default function GameClient({ room, word, isImposter, isHost, playerId, isObserver = false }: Props) {
   const router = useRouter();
   const isMobile = useMediaQuery('(max-width: 600px)') ?? false;
 
@@ -156,8 +157,9 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
    * acknowledged the reveal screen.
    */
   const desiredPhaseRef = useRef<GamePhase>('reveal');
-  /** Set to true when the player clicks "Got it" on the reveal screen. */
-  const revealDismissedRef = useRef(false);
+  /** Set to true when the player clicks "Got it" on the reveal screen.
+   *  Pre-set to true for observers — they skip the reveal phase entirely. */
+  const revealDismissedRef = useRef(isObserver);
 
   // ── Flush buffered canvas events once the canvas mounts ──────────────────
   // AnimatePresence (mode="wait") delays mounting of DrawingCanvas until
@@ -358,13 +360,18 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
 
   // ── PartySocket connection ────────────────────────────────────────────────
   useEffect(() => {
-    const pid = localStorage.getItem('lc_pid') ?? '';
+    // Observers use a throw-away ID just for the WS connection — they have no
+    // lc_pid in localStorage and don't need one.
+    const pid = isObserver
+      ? `obs-${Math.random().toString(36).slice(2, 10)}`
+      : (localStorage.getItem('lc_pid') ?? '')
     if (!pid) return;
 
-    const pname =
-      room.players.find((p) => p.id === pid)?.name ??
-      localStorage.getItem('lc_pname') ??
-      'Unknown';
+    const pname = isObserver
+      ? 'Observer'
+      : room.players.find((p) => p.id === pid)?.name ??
+        localStorage.getItem('lc_pname') ??
+        'Unknown';
 
     const socket = new PartySocket({
       host: process.env.NEXT_PUBLIC_PARTYKIT_HOST!,
@@ -486,6 +493,115 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
   const timerColor = timerPaused ? 'green'
     : timeLeftMs > 20_00 ? 'yellow'
     : 'red';
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
+  // ── Observer view ─────────────────────────────────────────────────────────
+  if (isObserver) {
+    const showTurnInfo = gamePhase === 'playing' || gamePhase === 'prep'
+    const showActivity = gamePhase === 'voting' || gamePhase === 'results' || gamePhase === 'guessing'
+
+    return (
+      <>
+        {showDisconnectOverlay && (
+          <Box
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 9999,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Overlay color="#000" backgroundOpacity={0.65} blur={4} />
+            <Stack align="center" gap="md" style={{ position: 'relative', zIndex: 1 }}>
+              <Loader color="white" size="lg" />
+              <Text c="white" fw={700} size="lg">Reconnecting…</Text>
+              <Text c="dimmed" size="sm">Your progress is saved.</Text>
+            </Stack>
+          </Box>
+        )}
+
+        <Stack gap="sm" w="100%" maw={900}>
+          {/* Observer banner */}
+          <Paper withBorder p="xs" radius="md">
+            <Group justify="space-between" wrap="wrap" gap="xs">
+              <Badge color="gray" variant="light" size="lg">Watching</Badge>
+              <Text size="sm" c="dimmed">You&apos;ll be able to join when this game ends</Text>
+            </Group>
+          </Paper>
+
+          {/* Turn info — shown during draw/prep phases */}
+          {showTurnInfo && (
+            <Group justify="space-between" align="center" gap="xs" wrap="wrap">
+              <Badge variant="light" color="violet" size="lg">
+                Round {turnState.round}/{turnState.totalRounds}
+              </Badge>
+
+              <Group gap="xs" align="center">
+                <Avatar color="violet" size="sm" radius="xl">
+                  {drawerPlayer ? avatarLetters(drawerPlayer.name) : '?'}
+                </Avatar>
+                <Text size="sm" fw={600}>
+                  {drawerPlayer?.name ?? '…'}&apos;s turn
+                </Text>
+              </Group>
+
+              <Group gap={6} align="center">
+                <RingProgress
+                  size={40}
+                  thickness={4}
+                  roundCaps
+                  sections={[{ value: timerPercent, color: timerColor }]}
+                />
+                <Text size="sm" fw={700} c={timerColor} ff="monospace">
+                  {formatTime(timeLeftMs)}
+                </Text>
+              </Group>
+            </Group>
+          )}
+
+          {/* Status pill for non-draw phases */}
+          {showActivity && (
+            <Group justify="center" gap="xs">
+              <Loader size="xs" />
+              <Text size="sm" c="dimmed">
+                {gamePhase === 'voting' ? 'Voting in progress…' : 'Game wrapping up…'}
+              </Text>
+            </Group>
+          )}
+
+          {/* Waiting pill before first turn_started arrives */}
+          {gamePhase === 'reveal' && (
+            <Group justify="center" gap="xs">
+              <Loader size="xs" />
+              <Text size="sm" c="dimmed">Game in progress…</Text>
+            </Group>
+          )}
+
+          {/* Canvas — always visible, read-only */}
+          <Box
+            style={{
+              border: '2px solid var(--mantine-color-gray-3)',
+              borderRadius: 8,
+              overflow: 'hidden',
+              background: '#fff',
+            }}
+          >
+            <DrawingCanvas
+              ref={canvasRef}
+              isDrawingAllowed={false}
+              color="#000000"
+              lineWidth={3}
+              tool="pen"
+              onDraw={() => {}}
+            />
+          </Box>
+        </Stack>
+      </>
+    )
+  }
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (

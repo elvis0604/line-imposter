@@ -13,15 +13,13 @@ export default async function GamePage(props: PageProps<'/room/[code]/game'>) {
 
   const playerId = await getPlayerId();
 
-  // Non-participants (no cookie, or not in the player list) cannot view the game.
-  // This prevents an outsider from seeing the secret word via the hydration payload.
-  if (!playerId || !room.players.some((p) => p.id === playerId)) {
-    redirect('/');
-  }
-
-  const isImposter = room.imposterId === playerId;
-  const isHost = room.hostId === playerId;
-  const word = isImposter ? null : room.word;
+  // Visitors who are not in the player list watch as silent observers.
+  // The secret word is withheld from them (and from the imposter) so it never
+  // leaks through the hydration payload.
+  const isObserver = !playerId || !room.players.some((p) => p.id === playerId);
+  const isImposter = !isObserver && room.imposterId === playerId;
+  const isHost = !isObserver && room.hostId === playerId;
+  const word = isObserver || isImposter ? null : room.word;
 
   return (
     <Center mih="100dvh" p="md">
@@ -30,7 +28,8 @@ export default async function GamePage(props: PageProps<'/room/[code]/game'>) {
         word={word}
         isImposter={isImposter}
         isHost={isHost}
-        playerId={playerId}
+        playerId={playerId ?? ''}
+        isObserver={isObserver}
       />
     </Center>
   );
