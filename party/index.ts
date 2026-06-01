@@ -236,9 +236,8 @@ export default class GameRoom implements Party.Server {
 
     const drawerId = this.state.turnOrder[this.state.currentTurnIndex] ?? '';
 
-    if (this.state.timerMode === 'classic' || drawerId.startsWith('dev-bot-')) {
-      // Classic: timer runs from the moment the turn starts (original behaviour).
-      // Dev bots also always use this path since they never send draw events.
+    if (drawerId.startsWith('dev-bot-')) {
+      // Dev bots never connect so they never send draw_start — auto-start the timer for them.
       this.state.drawingActive = true;
       this.state.turnEndTime = Date.now() + this.state.turnDuration;
       await this.persistState();
@@ -247,7 +246,7 @@ export default class GameRoom implements Party.Server {
         this.advanceTurn(expectedIndex).catch(console.error);
       }, this.state.turnDuration);
     }
-    // draw mode: timer stays paused until the first draw_start message.
+    // classic + draw mode: timer stays paused until the first draw_start message.
 
     this.broadcast({
       type: 'turn_started',
@@ -537,7 +536,10 @@ export default class GameRoom implements Party.Server {
 
     if (msg.type === 'draw_start' || msg.type === 'draw_pause') {
       await this.ensureState();
-      if (this.state.timerMode !== 'draw') return; // only applies in draw mode
+      // draw_pause only applies in draw mode (classic timer never pauses once started).
+      if (msg.type === 'draw_pause' && this.state.timerMode !== 'draw') return;
+      // draw_start applies to both classic and draw modes.
+      if (this.state.timerMode !== 'classic' && this.state.timerMode !== 'draw') return;
       const cs = sender.state as ConnectionState | null;
       const senderId = cs?.playerId ?? sender.id;
       const currentDrawer = this.state.turnOrder[this.state.currentTurnIndex];

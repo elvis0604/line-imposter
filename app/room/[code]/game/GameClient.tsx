@@ -283,16 +283,12 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
         case 'turn_started': {
           const { drawerId, turnIndex, round, totalRounds, turnDuration, timeLeft } = msg;
           setTurnState({ drawerId, turnIndex, round, totalRounds, turnDuration });
-          if (room.timerMode === 'classic') {
-            // Classic: countdown starts immediately when the turn starts.
-            setTimerPaused(false);
-            startCountdown(Date.now() + timeLeft);
-          } else {
-            // Draw mode: timer starts paused, waits for timer_update from server.
-            setTimerPaused(true);
-            if (rafRef.current) cancelAnimationFrame(rafRef.current);
-            setTimeLeftMs(timeLeft);
-          }
+          // Both classic and draw modes: timer starts paused, begins on first canvas press.
+          // (Reconnect: if drawingActive is already true the server immediately follows
+          //  this with a timer_update { paused: false } to resume the countdown.)
+          setTimerPaused(true);
+          if (rafRef.current) cancelAnimationFrame(rafRef.current);
+          setTimeLeftMs(timeLeft);
           desiredPhaseRef.current = 'playing';
           if (revealDismissedRef.current) setGamePhase('playing');
           break;
@@ -565,7 +561,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                       <Text size="sm" c="dimmed" ta="center">
                         Draw this word when it&apos;s your turn. Find the imposter!
                       </Text>
-                      <Badge color="teal" variant="light" size="lg" mt="xs" style={{ whiteSpace: 'normal', height: 'auto', textAlign: 'center' }}>Word: {word}</Badge>
+                      <Badge color="teal" variant="light" size="lg" mt="xs" style={{ whiteSpace: 'normal', height: 'auto', textAlign: 'center' }}>Word: {word?.toUpperCase()}</Badge>
                     </Stack>
                   )}
 
@@ -786,7 +782,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                              wordBreak: 'break-word',
                            }}
                          >
-                           {revealedWord}
+                           {revealedWord.toUpperCase()}
                          </Text>
                        </Stack>
                     </Paper>
@@ -823,7 +819,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                               wordBreak: 'break-word',
                             }}
                           >
-                            {guessedWord}
+                            {guessedWord?.toUpperCase()}
                           </Text>
                         </Stack>
                       </Paper>
@@ -847,7 +843,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                                   wordBreak: 'break-word',
                                 }}
                               >
-                                {wrongGuess}
+                                {wrongGuess?.toUpperCase()}
                               </Text>
                             </Stack>
                           </Paper>
@@ -1135,7 +1131,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                      lineWidth={lineWidth}
                      tool={tool}
                      onDraw={handleDraw}
-                     onDrawStart={isMyTurn && room.timerMode === 'draw' ? () => socketRef.current?.send(JSON.stringify({ type: 'draw_start' })) : undefined}
+                     onDrawStart={isMyTurn ? () => socketRef.current?.send(JSON.stringify({ type: 'draw_start' })) : undefined}
                      onDrawStop={isMyTurn && room.timerMode === 'draw' ? () => socketRef.current?.send(JSON.stringify({ type: 'draw_pause' })) : undefined}
                    />
                 </Box>
