@@ -64,6 +64,11 @@ export interface VotingResults {
    * Contains the exact guess string they submitted.
    */
   guessedWord?: string;
+  /**
+   * Set when the imposter attempted a guess but got it wrong.
+   * The artists still win, but the guess is shown on the results screen.
+   */
+  wrongGuess?: string;
 }
 
 // ─── PartyKit message protocol ────────────────────────────────────────────────
@@ -112,4 +117,5 @@ export type ClientMessage =
   | { type: 'draw_pause' }   // pen up   — pause timer
   | { type: 'skip_turn' }
   | { type: 'player_ready' }
-  | { type: 'reveal_acknowledged' };
+  | { type: 'reveal_acknowledged' }
+  | { type: 'dev_skip_bot_turn' };  // dev only — skip the current bot's turn immediately

@@ -39,9 +39,8 @@ export async function POST(req: Request, ctx: RouteContext<'/api/rooms/[code]/gu
   const protocol = process.env.NODE_ENV === 'development' ? 'http' : 'https';
   const partyUrl = `${protocol}://${process.env.NEXT_PUBLIC_PARTYKIT_HOST}/parties/main/${roomCode}`;
 
-  const pingBody = correct
-    ? { action: 'guess_result', guessedWord: guess }
-    : { action: 'guess_result' };
+  // Always send the guessed word so the results screen can display it regardless of outcome.
+  const pingBody = { action: 'guess_result', guessedWord: guess, correct };
 
   try {
     await fetch(partyUrl, {

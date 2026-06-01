@@ -60,7 +60,9 @@ export async function POST(req: Request, ctx: RouteContext<'/api/rooms/[code]/vo
   await redis.expire(countKey, ROOM_TTL_SECONDS);
 
   // Dev bots never connect — auto-cast their votes so the tally completes.
-  // Each bot votes for a random player that isn't itself.
+  // Non-imposter bots always vote for the imposter so the correct outcome
+  // is deterministic (real player's vote is the deciding factor).
+  // The imposter bot votes for a random artist so it doesn't self-incriminate.
   if (process.env.NODE_ENV === 'development') {
     const devBots = room.players.filter(
       (p) => p.id.startsWith('dev-bot-') && p.id !== playerId,
@@ -69,10 +71,18 @@ export async function POST(req: Request, ctx: RouteContext<'/api/rooms/[code]/vo
       const alreadyVoted = await redis.hsetnx(votesKey, bot.id, '');
       // Check if bot already has a vote recorded; 0 means field existed already.
       if (alreadyVoted === 0) continue; // already voted in a previous call
-      // Pick a random target that isn't the bot itself.
-      const candidates = room.players.filter((p) => p.id !== bot.id);
-      const target = candidates[Math.floor(Math.random() * candidates.length)];
-      await redis.hset(votesKey, { [bot.id]: target.id });
+      let targetId: string;
+      if (bot.id === room.imposterId) {
+        // Imposter bot votes for a random artist (not itself, not the imposter).
+        const artists = room.players.filter((p) => p.id !== bot.id && p.id !== room.imposterId);
+        const fallback = room.players.filter((p) => p.id !== bot.id);
+        const pool = artists.length > 0 ? artists : fallback;
+        targetId = pool[Math.floor(Math.random() * pool.length)].id;
+      } else {
+        // Artist bot always votes for the imposter.
+        targetId = room.imposterId ?? '';
+      }
+      await redis.hset(votesKey, { [bot.id]: targetId });
       await redis.expire(votesKey, ROOM_TTL_SECONDS);
       voteCount = await redis.incr(countKey);
       await redis.expire(countKey, ROOM_TTL_SECONDS);

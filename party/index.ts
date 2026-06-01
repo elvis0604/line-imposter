@@ -307,12 +307,12 @@ export default class GameRoom implements Party.Server {
 
   /**
    * End the guess phase.
-   * If `guessedWord` is provided the imposter guessed correctly — broadcast
-   * voting_complete with the outcome flipped to imposter wins.
-   * If omitted (timeout or wrong guess) broadcast voting_complete with the
-   * original artistsWin=true results so artists still win.
+   * If the guess was correct — broadcast voting_complete with artistsWin flipped to false
+   * and guessedWord set (imposter wins).
+   * If wrong or timeout — broadcast voting_complete with the original artistsWin=true
+   * results, attaching wrongGuess so the results screen can display what the imposter tried.
    */
-  private async endGuessPhase(guessedWord?: string) {
+  private async endGuessPhase(guessedWord?: string, correct?: boolean) {
     if (this.guessTimer) clearTimeout(this.guessTimer);
     this.guessTimer = null;
 
@@ -322,11 +322,14 @@ export default class GameRoom implements Party.Server {
     const originalResults = this.state.originalResults;
     if (!originalResults) return;
 
-    if (guessedWord !== undefined) {
+    if (correct && guessedWord !== undefined) {
       const results: VotingResults = { ...originalResults, artistsWin: false, guessedWord };
       this.broadcast({ type: 'voting_complete', results });
     } else {
-      this.broadcast({ type: 'voting_complete', results: originalResults });
+      const results: VotingResults = guessedWord !== undefined
+        ? { ...originalResults, wrongGuess: guessedWord }
+        : originalResults;
+      this.broadcast({ type: 'voting_complete', results });
     }
   }
 
@@ -588,6 +591,17 @@ export default class GameRoom implements Party.Server {
       return;
     }
 
+    if (msg.type === 'dev_skip_bot_turn') {
+      await this.ensureState();
+      const currentDrawer = this.state.turnOrder[this.state.currentTurnIndex] ?? '';
+      // Safety guard: only allow skipping when the current drawer is a dev bot.
+      if (!currentDrawer.startsWith('dev-bot-')) return;
+      if (this.turnTimer) clearTimeout(this.turnTimer);
+      this.turnTimer = null;
+      await this.advanceTurn(this.state.currentTurnIndex);
+      return;
+    }
+
     if (msg.type === 'player_ready') {
       await this.ensureState();
       const cs = sender.state as ConnectionState | null;
@@ -689,6 +703,7 @@ export default class GameRoom implements Party.Server {
       totalPlayers?: number;
       results?: VotingResults;
       guessedWord?: string;
+      correct?: boolean;
       targetPlayerId?: string;
     };
 
@@ -751,7 +766,7 @@ export default class GameRoom implements Party.Server {
     if (body.action === 'guess_result') {
       // Guard: ignore if the guess phase already ended (e.g. timer fired first).
       if (this.state.inGuessPhase) {
-        await this.endGuessPhase(body.guessedWord);
+        await this.endGuessPhase(body.guessedWord, body.correct === true);
       }
       return new Response('ok');
     }

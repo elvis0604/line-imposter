@@ -28,6 +28,7 @@ import {
   Loader,
   Overlay,
   TextInput,
+  SimpleGrid,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import type {
@@ -137,6 +138,10 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
 
   // ── Canvas & socket refs ──────────────────────────────────────────────────
   const canvasRef = useRef<DrawingCanvasHandle>(null);
+  const guessPreviewCanvasRef = useRef<DrawingCanvasHandle>(null);
+  /** Accumulated canvas events for the whole game — used to populate the
+   *  read-only preview canvas during the imposter-guess phase. */
+  const canvasHistoryRef = useRef<BroadcastedDrawEvent[]>([]);
   const socketRef = useRef<PartySocket | null>(null);
   /**
    * Buffer for canvas events (history snapshot + live draw strokes) that
@@ -177,6 +182,22 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
     return () => cancelAnimationFrame(raf);
   }, [gamePhase]);
 
+  // ── Populate the read-only guess-phase preview canvas ─────────────────────
+  useEffect(() => {
+    if (gamePhase !== 'guessing') return;
+
+    let raf: number;
+    const flush = () => {
+      if (!guessPreviewCanvasRef.current) {
+        raf = requestAnimationFrame(flush);
+        return;
+      }
+      guessPreviewCanvasRef.current.loadHistory(canvasHistoryRef.current);
+    };
+    raf = requestAnimationFrame(flush);
+    return () => cancelAnimationFrame(raf);
+  }, [gamePhase]);
+
   // ── Timer countdown ───────────────────────────────────────────────────────
   const startCountdown = useCallback((endTime: number) => {
     turnEndTimeRef.current = endTime;
@@ -204,6 +225,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
       switch (msg.type) {
         case 'draw': {
           if (msg.event.drawerId === playerId) return;
+          canvasHistoryRef.current.push(msg.event as BroadcastedDrawEvent);
           if (canvasRef.current) {
             canvasRef.current.replayEvent(msg.event as BroadcastedDrawEvent);
           } else {
@@ -214,6 +236,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
         }
 
         case 'canvas_history': {
+          canvasHistoryRef.current = [...msg.events];
           if (canvasRef.current) {
             canvasRef.current.loadHistory(msg.events);
           } else {
@@ -659,7 +682,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                   </Stack>
                 </Paper>
               ) : (
-                <Stack gap="xs">
+                <SimpleGrid cols={2} spacing="xs">
                   {room.players.filter((p) => p.id !== playerId).map((player) => (
                     <Button
                       key={player.id}
@@ -678,7 +701,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                       {player.name}
                     </Button>
                   ))}
-                </Stack>
+                </SimpleGrid>
               )}
             </Stack>
           </motion.div>
@@ -696,7 +719,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
             style={{ width: '100%', maxWidth: 560 }}
           >
             {(() => {
-              const { tally, imposterId, artistsWin, guessedWord } = votingResults;
+              const { tally, imposterId, artistsWin, guessedWord, wrongGuess } = votingResults;
               const revealedWord = votingResults.word;
               const imposterPlayer = room.players.find((p) => p.id === imposterId);
               const wasImposter = playerId === imposterId;
@@ -800,15 +823,35 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                               wordBreak: 'break-word',
                             }}
                           >
-                            &ldquo;{guessedWord}&rdquo;
-                          </Text>
-                          <Text size="xs" c="dimmed" ta="center">
-                            The imposter identified the word.
+                            {guessedWord}
                           </Text>
                         </Stack>
                       </Paper>
                     ) : (
                       <>
+                        {wrongGuess && (
+                          <Paper withBorder p="md" radius="md">
+                            <Stack gap={4} align="center">
+                              <Text size="xs" tt="uppercase" fw={700} c="dimmed">The imposter&apos;s guess</Text>
+                              <Text
+                                fw={700}
+                                size="md"
+                                ta="center"
+                                px="sm"
+                                py={4}
+                                w="100%"
+                                style={{
+                                  background: 'var(--mantine-color-orange-light)',
+                                  color: 'var(--mantine-color-orange-light-color)',
+                                  borderRadius: 'var(--mantine-radius-md)',
+                                  wordBreak: 'break-word',
+                                }}
+                              >
+                                {wrongGuess}
+                              </Text>
+                            </Stack>
+                          </Paper>
+                        )}
                         <Text fw={600} size="sm">Vote tally</Text>
                         {sortedPlayers.map((player) => {
                           const votes = tally[player.id] ?? 0;
@@ -883,18 +926,40 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
             animate="visible"
             exit="hidden"
             transition={fadeTrans}
-            style={{ width: '100%', maxWidth: 560 }}
+            style={{ width: '100%', maxWidth: 900 }}
           >
-            <Stack gap="lg" w="100%">
-              <Paper
-                withBorder
-                p="xl"
-                radius="md"
-                style={{
-                  borderColor: 'var(--mantine-color-red-6)',
-                  borderWidth: 2,
-                }}
-              >
+            <Stack gap="sm" w="100%" maw={480} mx="auto">
+              {/* Read-only canvas preview — matches the width of the guess card */}
+                <Box
+                  style={{
+                    width: '100%',
+                    aspectRatio: '4/3',
+                    border: '2px solid var(--mantine-color-gray-3)',
+                    borderRadius: 8,
+                    overflow: 'hidden',
+                    background: '#fff',
+                  }}
+                >
+                  <DrawingCanvas
+                    ref={guessPreviewCanvasRef}
+                    isDrawingAllowed={false}
+                    color="#000000"
+                    lineWidth={3}
+                    tool="pen"
+                    onDraw={() => {}}
+                  />
+                </Box>
+
+                {/* Guess card */}
+                <Paper
+                  withBorder
+                  p="xl"
+                  radius="md"
+                  style={{
+                    borderColor: 'var(--mantine-color-red-6)',
+                    borderWidth: 2,
+                  }}
+                >
                 <Stack align="center" gap="lg">
                   <ThemeIcon size={64} radius="xl" color="red" variant="light">
                     <Text size="2rem">🎭</Text>
@@ -916,7 +981,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                   </Group>
 
                   {isImposter ? (
-                    <Stack gap="sm" w="100%">
+                    <Stack gap="sm" w="100%" mx="auto">
                       <Text size="sm" c="dimmed" ta="center">
                         Study the drawings carefully. What word were the artists drawing?
                       </Text>
@@ -928,10 +993,10 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') handleGuess();
                         }}
-                        size="md"
+                        size="sm"
                       />
                       <Button
-                        size="md"
+                        size="sm"
                         color="red"
                         fullWidth
                         loading={guessSubmitting}
@@ -953,7 +1018,7 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
                     </Stack>
                   )}
                 </Stack>
-              </Paper>
+                </Paper>
             </Stack>
           </motion.div>
         )}
@@ -1157,6 +1222,8 @@ export default function GameClient({ room, word, isImposter, isHost, playerId }:
           setRevealAcknowledged={setRevealAcknowledged}
           setRevealReadyCount={setRevealReadyCount}
           setMyVote={setMyVote}
+          isBotTurn={turnState.drawerId.startsWith('dev-bot-')}
+          onSkipBotTurn={() => socketRef.current?.send(JSON.stringify({ type: 'dev_skip_bot_turn' }))}
         />
       )}
     </>

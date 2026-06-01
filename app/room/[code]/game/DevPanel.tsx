@@ -21,6 +21,8 @@ interface DevPanelProps {
   setRevealAcknowledged: (v: boolean) => void;
   setRevealReadyCount: (n: number) => void;
   setMyVote: (v: string | null) => void;
+  isBotTurn?: boolean;
+  onSkipBotTurn?: () => void;
 }
 
 const PHASES: { value: GamePhase; label: string }[] = [
@@ -42,6 +44,8 @@ export default function DevPanel({
   setRevealAcknowledged,
   setRevealReadyCount,
   setMyVote,
+  isBotTurn,
+  onSkipBotTurn,
 }: DevPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -109,6 +113,17 @@ export default function DevPanel({
               </Button>
             ))}
           </Group>
+          {currentPhase === 'playing' && isBotTurn && (
+            <Button
+              size="compact-xs"
+              variant="filled"
+              color="orange"
+              fullWidth
+              onClick={() => onSkipBotTurn?.()}
+            >
+              Skip bot turn
+            </Button>
+          )}
           <Group gap={4} justify="space-between">
             <Badge size="xs" color="violet" variant="dot">
               {currentPhase}
